@@ -22,7 +22,7 @@ import {
 import CreateLaravelWizard from "@/components/site-create/CreateLaravelWizard.vue";
 import CreateWordPressWizard from "@/components/site-create/CreateWordPressWizard.vue";
 import SiteCard from "@/components/SiteCard.vue";
-import ManageDomainsModal from "@/components/ManageDomainsModal.vue";
+import SiteDetailsSidebar from "@/components/SiteDetailsSidebar.vue";
 import PageHeader from "@/components/PageHeader.vue";
 import Badge from "@/components/ui/Badge.vue";
 import Button from "@/components/ui/Button.vue";
@@ -37,9 +37,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import Input from "@/components/ui/Input.vue";
 import Modal from "@/components/ui/Modal.vue";
-import Select from "@/components/ui/Select.vue";
 import Spinner from "@/components/ui/Spinner.vue";
-import Switch from "@/components/ui/Switch.vue";
 import { registerViewActions } from "@/lib/shortcuts/useViewActions";
 import { sitesIntent } from "@/lib/shortcuts/sitesIntent";
 import { slugifySiteName } from "@/lib/siteName";
@@ -68,7 +66,6 @@ import {
   startQuickTunnel,
   unlink,
   unpark,
-  wordpressAdminUsers,
 } from "@/ipc/client";
 import type { GroupsState, Site, SiteEntry } from "@/ipc/types";
 
@@ -93,6 +90,25 @@ const filterInput = ref<InstanceType<typeof Input> | null>(null);
 
 const tld = computed(() => report.value?.tld ?? "test");
 const caTrusted = computed(() => report.value?.ca.trusted_system === true);
+
+const sidebarTarget = ref<string | null>(null);
+const sidebarSite = computed<SiteEntry | null>(() =>
+  sidebarTarget.value
+    ? (sites.value.find((site) => site.name === sidebarTarget.value) ?? null)
+    : null,
+);
+
+function openSidebar(site: SiteEntry): void {
+  sidebarTarget.value = site.name;
+}
+
+function closeSidebar(): void {
+  sidebarTarget.value = null;
+}
+
+watch(sidebarSite, (site) => {
+  if (!site) closeSidebar();
+});
 
 // ── site groups ──
 const emptyGroups: GroupsState = { order: [], members: {} };
@@ -130,6 +146,53 @@ async function toggleSecure(site: Site): Promise<void> {
     await load({ force: true });
   } catch (e) {
     toast.error("Couldn't change HTTPS", (e as IpcError).message);
+  } finally {
+    rowBusy.value = null;
+  }
+}
+
+async function changeSitePhp(site: SiteEntry, version: string): Promise<void> {
+  if (version === site.php) return;
+  rowBusy.value = `edit:${site.name}`;
+  try {
+    await setPhp(site.name, version);
+    toast.success(`PHP ${version} selected for ${site.name}`);
+    await load({ force: true });
+  } catch (e) {
+    toast.error("Couldn't change PHP version", (e as IpcError).message);
+  } finally {
+    rowBusy.value = null;
+  }
+}
+
+async function changeSiteWebRoot(site: SiteEntry, path: string): Promise<void> {
+  const current = site.web_subpath ?? "";
+  if (path === current) return;
+  rowBusy.value = `edit:${site.name}`;
+  try {
+    await setWebRoot(site.name, path === "" ? null : path);
+    toast.success(path === "" ? `Web root reset for ${site.name}` : `Web root changed for ${site.name}`);
+    await load({ force: true });
+  } catch (e) {
+    toast.error("Couldn't change web root", (e as IpcError).message);
+  } finally {
+    rowBusy.value = null;
+  }
+}
+
+async function toggleFrontController(site: SiteEntry, enabled: boolean): Promise<void> {
+  if (enabled === site.uses_front_controller) return;
+  rowBusy.value = `edit:${site.name}`;
+  try {
+    await setFrontController(site.name, enabled);
+    toast.success(
+      enabled
+        ? `Front controller enabled for ${site.name}`
+        : `Front controller disabled for ${site.name}`,
+    );
+    await load({ force: true });
+  } catch (e) {
+    toast.error("Couldn't change front controller", (e as IpcError).message);
   } finally {
     rowBusy.value = null;
   }
@@ -296,13 +359,6 @@ async function onCreated(): Promise<void> {
   await load({ force: true });
 }
 
-// PHP options for the edit form, from the live status report.
-const phpOptions = computed(() => {
-  const versions = (report.value?.php ?? []).map((p) => p.version);
-  const opts = versions.map((v) => ({ value: v, label: `PHP ${v}` }));
-  return opts.length ? opts : null;
-});
-
 /** The parent directory of a path (slice before the last `/` or `\`). */
 function parentDir(p: string): string {
   const i = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
@@ -374,154 +430,43 @@ function sectionExpanded(sec: GroupSection): boolean {
   return searching.value || !isCollapsed(sec.name);
 }
 
-// ── manage domains ──
-// Stored by name (not the entry) and re-resolved live from the loaded sites, so
-// the modal reflects fresh domains after each mutation reloads the cache. The
-// mount is `v-if`-guarded on `manageSite`, so if the site vanishes (external
-// unlink landing on the background poll) the modal closes cleanly instead of
-// dereferencing an undefined `site`.
-const manageTarget = ref<string | null>(null);
-const manageSite = computed<SiteEntry | null>(() =>
-  manageTarget.value ? (sites.value.find((s) => s.name === manageTarget.value) ?? null) : null,
-);
-function openManageDomains(s: SiteEntry): void {
-  manageTarget.value = s.name;
-}
-// If the open site disappears (e.g. an external unlink lands on the background
-// poll), the `v-if="manageSite"` mount drops the modal without a close event, so
-// clear the stale name here - otherwise re-linking a same-named site later would
-// pop the modal open on its own.
-watch(manageSite, (s) => {
-  if (!s) manageTarget.value = null;
-});
-
-// ── edit site (PHP + web root + HTTPS + group + WordPress auto-login) ──
-const editOpen = ref(false);
-const editTarget = ref<SiteEntry | null>(null);
-const editPhp = ref<string>("");
-const editWebRoot = ref("");
-const editSecure = ref(false);
-const editGroup = ref<string>("");
-const editWpAutoLogin = ref(false);
-const editWpAutoLoginUser = ref<string>("");
-const editFrontController = ref(false);
-
-const DEFAULT_ADMIN_OPTION = { value: "", label: "Earliest admin (default)" };
-type WpAdminUsersStatus = "idle" | "loading" | "ready" | "error";
-const wpAdminUsersStatus = ref<WpAdminUsersStatus>("idle");
-const wpAdminUsersError = ref("");
-const wpAdminUsersOptions = ref<{ value: string; label: string }[]>([DEFAULT_ADMIN_OPTION]);
-
-/** The picker's real `:options` while loaded; a single synthetic "Loading…"/
- *  "Error: …" entry otherwise, paired with the Select's own `disabled` state
- *  (also gated on `wpAdminUsersStatus`) so an in-flight or failed fetch is
- *  never mistaken for "no other admins exist". */
-const wpAdminUserSelectOptions = computed(() =>
-  wpAdminUsersStatus.value === "loading"
-    ? [{ value: "", label: "Loading users…" }]
-    : wpAdminUsersStatus.value === "error"
-      ? [{ value: "", label: `Error: ${wpAdminUsersError.value}` }]
-      : wpAdminUsersOptions.value,
-);
-
-/** Bumped on every `loadWpAdminUsers` call so a response for a site the user
- *  has since navigated away from (closed the dialog, opened another site's)
- *  can recognize it's stale and skip applying its result. */
-let wpAdminUsersRequestId = 0;
-
-async function loadWpAdminUsers(name: string): Promise<void> {
-  const requestId = ++wpAdminUsersRequestId;
-  wpAdminUsersStatus.value = "loading";
+async function changeSiteGroup(site: SiteEntry, group: string): Promise<void> {
+  if (group === currentGroupOf(site.name)) return;
+  rowBusy.value = `edit:${site.name}`;
   try {
-    const users = await wordpressAdminUsers(name);
-    if (requestId !== wpAdminUsersRequestId) return;
-    wpAdminUsersOptions.value = [
-      DEFAULT_ADMIN_OPTION,
-      ...users.map((u) => ({ value: u.login, label: u.display_name || u.login })),
-    ];
-    wpAdminUsersStatus.value = "ready";
-  } catch (e) {
-    if (requestId !== wpAdminUsersRequestId) return;
-    wpAdminUsersError.value = (e as IpcError).message || "couldn't load admin users";
-    wpAdminUsersStatus.value = "error";
-  }
-}
-
-function openEdit(s: SiteEntry): void {
-  editTarget.value = s;
-  editPhp.value = s.php;
-  editWebRoot.value = s.web_subpath ?? "";
-  editSecure.value = s.secure;
-  editWpAutoLogin.value = s.wp_auto_login ?? false;
-  editWpAutoLoginUser.value = s.wp_auto_login_user ?? "";
-  editFrontController.value = s.uses_front_controller ?? false;
-  // Seed from current membership, coercing a stale value (group deleted in
-  // another window/CLI) to "" so the Select never sits out of range.
-  editGroup.value = currentGroupOf(s.name);
-  // Fetched fresh on every open (not gated on the toggle's own transition -
-  // that missed a re-fetch when a site was *already* auto-login-enabled, so
-  // the picker silently kept showing only the previous dialog's list, or the
-  // placeholder if this is the first time it's ever been opened) so it's
-  // ready by the time the toggle (already on, or about to be turned on) is
-  // visible.
-  if (s.is_wordpress) {
-    wpAdminUsersStatus.value = "idle";
-    wpAdminUsersOptions.value = [DEFAULT_ADMIN_OPTION];
-    void loadWpAdminUsers(s.name);
-  }
-  // Defer past the dropdown's close so reka-ui's focus-restore doesn't steal
-  // focus from the modal.
-  void nextTick(() => {
-    editOpen.value = true;
-  });
-}
-
-async function chooseEditDir(): Promise<void> {
-  // The picker only suggests a start dir; the daemon enforces containment.
-  const dir = await pickDirectory(editTarget.value?.document_root);
-  if (dir) editWebRoot.value = dir;
-}
-
-async function confirmEdit(close: () => void): Promise<void> {
-  const s = editTarget.value;
-  close();
-  if (!s) return;
-  rowBusy.value = `edit:${s.name}`;
-  try {
-    // Apply only what changed; each setter restarts/re-renders as needed.
-    if (editPhp.value && editPhp.value !== s.php) {
-      await setPhp(s.name, editPhp.value);
-    }
-    const newRoot = editWebRoot.value.trim();
-    if (newRoot !== (s.web_subpath ?? "")) {
-      await setWebRoot(s.name, newRoot === "" ? null : newRoot);
-    }
-    if (editSecure.value !== s.secure) {
-      await setSecure(s.name, editSecure.value);
-    }
-    if (hasGroups.value && editGroup.value !== currentGroupOf(s.name)) {
-      await setSiteGroup(s.name, editGroup.value === "" ? null : editGroup.value);
-    }
-    if (
-      editWpAutoLogin.value !== (s.wp_auto_login ?? false) ||
-      editWpAutoLoginUser.value !== (s.wp_auto_login_user ?? "")
-    ) {
-      await setWordpressAutoLogin(
-        s.name,
-        editWpAutoLogin.value,
-        editWpAutoLoginUser.value || null,
-      );
-    }
-    if (editFrontController.value !== (s.uses_front_controller ?? false)) {
-      await setFrontController(s.name, editFrontController.value);
-    }
-    toast.success(`Updated ${s.name}`);
+    await setSiteGroup(site.name, group === "" ? null : group);
+    toast.success(
+      group === "" ? `Removed ${site.name} from its group` : `Moved ${site.name} to ${group}`,
+    );
     await load({ force: true });
   } catch (e) {
-    toast.error("Couldn't update site", (e as IpcError).message);
+    toast.error("Couldn't change group", (e as IpcError).message);
   } finally {
     rowBusy.value = null;
-    editTarget.value = null;
+  }
+}
+
+async function changeWpAutoLogin(
+  site: SiteEntry,
+  enabled: boolean,
+  user: string | null,
+): Promise<void> {
+  if (enabled === (site.wp_auto_login ?? false) && (user ?? "") === (site.wp_auto_login_user ?? "")) {
+    return;
+  }
+  rowBusy.value = `edit:${site.name}`;
+  try {
+    await setWordpressAutoLogin(site.name, enabled, user);
+    toast.success(
+      enabled
+        ? `Auto-login enabled for ${site.name}`
+        : `Auto-login disabled for ${site.name}`,
+    );
+    await load({ force: true });
+  } catch (e) {
+    toast.error("Couldn't change auto-login", (e as IpcError).message);
+  } finally {
+    rowBusy.value = null;
   }
 }
 
@@ -805,11 +750,7 @@ async function shareSitePublicly(s: Site): Promise<void> {
               :report="report ?? null"
               :tld="tld"
               :busy="siteBusy(s.name)"
-              :sharing="sharing === s.name"
-              @edit="openEdit"
-              @manage-domains="openManageDomains"
-              @unlink="openUnlink"
-              @share="shareSitePublicly"
+              @edit="openSidebar"
               @toggle-secure="toggleSecure"
             />
           </div>
@@ -902,11 +843,7 @@ async function shareSitePublicly(s: Site): Promise<void> {
                     :report="report ?? null"
                     :tld="tld"
                     :busy="siteBusy(s.name)"
-                    :sharing="sharing === s.name"
-                    @edit="openEdit"
-                    @manage-domains="openManageDomains"
-                    @unlink="openUnlink"
-                    @share="shareSitePublicly"
+                    @edit="openSidebar"
                     @toggle-secure="toggleSecure"
                   />
                 </div>
@@ -968,6 +905,28 @@ async function shareSitePublicly(s: Site): Promise<void> {
       </AsyncState>
     </div>
 
+    <SiteDetailsSidebar
+      :site="sidebarSite"
+      :open="sidebarSite !== null"
+      :report="report ?? null"
+      :tld="tld"
+      :php-versions="phpVersionList"
+      :group-options="hasGroups ? groupSelectOptions : []"
+      :current-group="sidebarSite ? currentGroupOf(sidebarSite.name) : ''"
+      :busy="sidebarSite ? siteBusy(sidebarSite.name) : false"
+      :sharing="sidebarSite ? sharing === sidebarSite.name : false"
+      @close="closeSidebar"
+      @change-php="changeSitePhp"
+      @change-web-root="changeSiteWebRoot"
+      @toggle-secure="toggleSecure"
+      @toggle-front-controller="toggleFrontController"
+      @change-group="changeSiteGroup"
+      @change-wp-auto-login="changeWpAutoLogin"
+      @share="shareSitePublicly"
+      @unlink="openUnlink"
+      @domains-changed="load({ force: true })"
+    />
+
     <!-- create new Laravel site wizard -->
     <CreateLaravelWizard
       v-model:open="createOpen"
@@ -989,118 +948,6 @@ async function shareSitePublicly(s: Site): Promise<void> {
       :report="report ?? null"
       @created="onCreated"
     />
-
-    <!-- manage domains modal -->
-    <ManageDomainsModal
-      v-if="manageSite"
-      :open="manageTarget !== null"
-      :site="manageSite"
-      :tld="tld"
-      @update:open="(v: boolean) => { if (!v) manageTarget = null; }"
-      @changed="load({ force: true })"
-    />
-
-    <!-- edit site modal -->
-    <Modal v-model:open="editOpen" :title="`Edit ${editTarget?.name ?? ''}`">
-      <div class="space-y-4">
-        <div>
-          <label for="edit-php-version" class="text-sm font-medium">PHP version</label>
-          <div class="mt-2">
-            <Select
-              v-if="phpOptions"
-              id="edit-php-version"
-              :model-value="editPhp"
-              :options="phpOptions"
-              class="w-full"
-              aria-label="PHP version"
-              @update:model-value="(v: string) => (editPhp = v)"
-            />
-            <p v-else class="text-xs text-muted-foreground">No PHP versions installed.</p>
-          </div>
-        </div>
-
-        <div v-if="!editTarget?.is_wordpress">
-          <label class="block text-sm font-medium" for="editwebroot">Web root</label>
-          <div class="mt-2 flex gap-2">
-            <Input id="editwebroot" v-model="editWebRoot" placeholder="public" />
-            <Button variant="outline" @click="chooseEditDir"><FolderOpen class="size-4" /></Button>
-          </div>
-          <p class="mt-1 text-xs text-muted-foreground">
-            Directory served as the document root, relative to the site folder
-            (e.g. <code class="font-mono">public</code>). Leave blank to auto-detect.
-          </p>
-        </div>
-
-        <div class="flex items-center justify-between gap-4">
-          <div>
-            <p class="text-sm font-medium">HTTPS</p>
-            <p class="text-xs text-muted-foreground">Serve this site over TLS.</p>
-          </div>
-          <Switch v-model="editSecure" aria-label="HTTPS" />
-        </div>
-
-        <!-- Hidden for WordPress: WP needs direct execution (wp-admin scripts,
-             one-click login), so funnelling through index.php would break it. -->
-        <div v-if="!editTarget?.is_wordpress" class="flex items-center justify-between gap-4">
-          <div>
-            <p class="text-sm font-medium">Route through front controller</p>
-            <p id="edit-front-controller-desc" class="text-xs text-muted-foreground">
-              On: every request funnels through the site's <code>index.php</code> (Laravel,
-              Symfony). Off: named <code>.php</code> files are executed directly (plain PHP).
-            </p>
-          </div>
-          <Switch
-            v-model="editFrontController"
-            aria-label="Route through front controller"
-            aria-describedby="edit-front-controller-desc"
-          />
-        </div>
-
-        <div v-if="editTarget?.is_wordpress" class="space-y-2">
-          <div class="flex items-center justify-between gap-4">
-            <div>
-              <p class="text-sm font-medium">WordPress Auto Admin Login</p>
-              <p class="text-xs text-muted-foreground">
-                Sign in automatically when opening WP Admin.
-              </p>
-            </div>
-            <Switch v-model="editWpAutoLogin" aria-label="WordPress Auto Admin Login" />
-          </div>
-          <div v-if="editWpAutoLogin">
-            <label for="edit-wp-admin-user" class="text-sm font-medium">Sign in as</label>
-            <div class="mt-2">
-              <Select
-                id="edit-wp-admin-user"
-                :model-value="wpAdminUsersStatus === 'ready' ? editWpAutoLoginUser : ''"
-                :options="wpAdminUserSelectOptions"
-                :disabled="wpAdminUsersStatus !== 'ready'"
-                class="w-full"
-                aria-label="Sign in as"
-                @update:model-value="(v: string) => (editWpAutoLoginUser = v)"
-              />
-            </div>
-          </div>
-        </div>
-
-        <div v-if="hasGroups">
-          <label for="edit-group" class="text-sm font-medium">Group</label>
-          <div class="mt-2">
-            <Select
-              id="edit-group"
-              :model-value="editGroup"
-              :options="groupSelectOptions"
-              class="w-full"
-              aria-label="Group"
-              @update:model-value="(v: string) => (editGroup = v)"
-            />
-          </div>
-        </div>
-      </div>
-      <template #footer="{ close }">
-        <Button variant="ghost" @click="close">Cancel</Button>
-        <Button @click="confirmEdit(close)">Save</Button>
-      </template>
-    </Modal>
 
     <!-- link modal -->
     <Modal v-model:open="linkOpen" title="Link a site">

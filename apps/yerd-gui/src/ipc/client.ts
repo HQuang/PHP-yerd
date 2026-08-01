@@ -911,6 +911,11 @@ export async function openInEditor(path: string): Promise<void> {
   await openPath(path);
 }
 
+/** Open a terminal in a project directory through the host bridge. */
+export async function openInTerminal(path: string): Promise<void> {
+  await call<void>("open_terminal", { path });
+}
+
 /** Returns the chosen directory, or null if the user cancelled. */
 export async function pickDirectory(defaultPath?: string): Promise<string | null> {
   const { open } = await import("@tauri-apps/plugin-dialog");

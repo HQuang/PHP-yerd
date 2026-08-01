@@ -10,6 +10,7 @@
 use std::fs;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use directories::ProjectDirs;
 
@@ -18,12 +19,126 @@ use crate::metrics::SystemMetrics;
 use crate::paths::{Paths, PlatformDirs};
 use crate::port_binder::{BoundPort, PortBinder, PortPair};
 use crate::port_redirect::PortRedirector;
+use crate::pure::terminal_spec::{working_dir_flags, TERMINAL_SPECS};
 use crate::pure::{
     networkmanager_dnsmasq, pem_match, port_plan, proc_metrics, resolved_drop_in, system_roots,
 };
 use crate::resolver::ResolverInstaller;
+use crate::terminal::TerminalLauncher;
 use crate::trust_store::{BrowserCaTrust, CaFingerprint, NssOutcome, TrustStore};
-use crate::{BindPairErrorReason, PlatformError, ResolverErrorReason, TrustStoreErrorReason};
+use crate::{
+    BindPairErrorReason, PlatformError, ResolverErrorReason, TerminalErrorReason,
+    TrustStoreErrorReason,
+};
+
+/// Linux terminal launcher.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct LinuxTerminalLauncher;
+
+impl LinuxTerminalLauncher {
+    /// Construct.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+/// The file name `program` actually runs, following symlinks. `x-terminal-emulator`
+/// is Debian's alternatives link and can point at anything, so its flags have to
+/// come from the link target: `gnome-terminal` needs `--working-directory`
+/// because its D-Bus server does not inherit our `current_dir`, while handing
+/// that same flag to `xterm` would stop it launching at all.
+fn resolved_program(program: &str) -> String {
+    let candidate = if program.contains('/') {
+        Some(PathBuf::from(program))
+    } else {
+        std::env::var_os("PATH").and_then(|paths| {
+            std::env::split_paths(&paths)
+                .map(|dir| dir.join(program))
+                .find(|candidate| candidate.is_file())
+        })
+    };
+    candidate
+        .and_then(|path| fs::canonicalize(path).ok())
+        .and_then(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|| program.to_owned())
+}
+
+fn terminal_command(program: &str, path: &Path) -> Command {
+    let mut command = Command::new(program);
+    if let Some(flags) = working_dir_flags(&resolved_program(program)) {
+        command.args(flags).arg(path);
+    }
+    command.current_dir(path);
+    command
+}
+
+fn launch_terminal(program: &str, path: &Path) -> std::io::Result<()> {
+    terminal_command(program, path).spawn().map(|_| ())
+}
+
+/// The terminal the user selected in Plasma, read from `kdeglobals`. Honoured
+/// ahead of the probe list so a machine with both Kitty and Konsole installed
+/// doesn't open the wrong one purely because of our probe order.
+fn configured_kde_terminal() -> Option<String> {
+    for reader in ["kreadconfig6", "kreadconfig5"] {
+        let output = Command::new(reader)
+            .args([
+                "--file",
+                "kdeglobals",
+                "--group",
+                "General",
+                "--key",
+                "TerminalApplication",
+            ])
+            .output()
+            .ok();
+        let Some(output) = output else {
+            continue;
+        };
+        if !output.status.success() {
+            continue;
+        }
+        let value = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        if !value.is_empty() {
+            return Some(value);
+        }
+    }
+    None
+}
+
+impl TerminalLauncher for LinuxTerminalLauncher {
+    fn open_terminal(&self, path: &Path) -> Result<(), PlatformError> {
+        let path_arg = path.to_string_lossy();
+        if Command::new("xdg-terminal-exec")
+            .arg(format!("--dir={path_arg}"))
+            .current_dir(path)
+            .spawn()
+            .is_ok()
+        {
+            return Ok(());
+        }
+        if launch_terminal("x-terminal-emulator", path).is_ok() {
+            return Ok(());
+        }
+        if let Some(program) = configured_kde_terminal() {
+            if launch_terminal(&program, path).is_ok() {
+                return Ok(());
+            }
+        }
+        for (program, _) in TERMINAL_SPECS {
+            if launch_terminal(program, path).is_ok() {
+                return Ok(());
+            }
+        }
+        Err(PlatformError::Terminal {
+            reason: TerminalErrorReason::NoSupportedTerminal,
+        })
+    }
+}
 
 /// Linux `Paths` implementation.
 #[derive(Debug, Default, Clone, Copy)]

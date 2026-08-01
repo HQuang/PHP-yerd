@@ -169,6 +169,7 @@ fn main() {
             commands::list_named_tunnels,
             commands::route_tunnel_dns,
             commands::set_site_tunnel,
+            commands::open_terminal,
             commands::start_named_tunnel,
             commands::stop_named_tunnel,
             commands::create_site,

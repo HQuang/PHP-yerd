@@ -1,30 +1,19 @@
 <script setup lang="ts">
 import {
-  ExternalLink,
+  ArrowUpRight,
   FolderOpen,
   FolderTree,
-  Globe,
   Link2,
   Lock,
   LockOpen,
-  MoreHorizontal,
-  Network,
   Pencil,
-  Trash2,
-  UserRound,
 } from "lucide-vue-next";
 
 import Button from "@/components/ui/Button.vue";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import Spinner from "@/components/ui/Spinner.vue";
-import { isUnbound, openTitle, siteUrl, wpAdminLoginUrl, wpAdminUrl } from "@/lib/siteUrl";
-import { mintWordPressLoginToken, openInBrowser, openPath } from "@/ipc/client";
+import { openTitle, siteUrl } from "@/lib/siteUrl";
+import { openInBrowser, openPath } from "@/ipc/client";
+import { openWpAdmin } from "@/lib/wpAdmin";
 import type { SiteEntry, StatusReport } from "@/ipc/types";
 
 const props = defineProps<{
@@ -33,15 +22,10 @@ const props = defineProps<{
   tld: string;
   /** Whether a mutation targeting this site is in flight (shows a spinner). */
   busy?: boolean;
-  /** Whether a "share publicly" action for this site is in flight. */
-  sharing?: boolean;
 }>();
 
 const emit = defineEmits<{
   edit: [site: SiteEntry];
-  manageDomains: [site: SiteEntry];
-  unlink: [site: SiteEntry];
-  share: [site: SiteEntry];
   toggleSecure: [site: SiteEntry];
 }>();
 
@@ -60,26 +44,6 @@ function displayHost(s: SiteEntry): string {
 function extraDomainCount(s: SiteEntry): number {
   return s.domains && s.domains.length > 1 ? s.domains.length - 1 : 0;
 }
-
-/**
- * "WP Admin" action: one-click, pre-authenticated login when the site has
- * auto-login enabled and unbound/resolver-off isn't in the way, falling back
- * to the plain (not signed-in) link otherwise - including if minting a token
- * fails for any reason (site disappeared, daemon error). Never blocks or
- * surfaces an error, just silently degrades.
- */
-async function openWpAdmin(s: SiteEntry): Promise<void> {
-  if (!isUnbound(props.report) && s.wp_auto_login) {
-    try {
-      const token = await mintWordPressLoginToken(s.name);
-      await openInBrowser(wpAdminLoginUrl(s, props.report, token));
-      return;
-    } catch {
-      /* fall through to the plain link below */
-    }
-  }
-  await openInBrowser(wpAdminUrl(s, props.report));
-}
 </script>
 
 <template>
@@ -94,6 +58,7 @@ async function openWpAdmin(s: SiteEntry): Promise<void> {
           @click="openInBrowser(siteUrl(site, report))"
         >
           <span class="truncate">{{ displayHost(site) }}</span>
+          <ArrowUpRight class="size-3 shrink-0 opacity-70" />
           <span
             v-if="extraDomainCount(site) > 0"
             class="shrink-0 rounded bg-muted px-1 text-[10px] font-normal text-muted-foreground"
@@ -118,58 +83,18 @@ async function openWpAdmin(s: SiteEntry): Promise<void> {
 
       <div class="flex shrink-0 items-center">
         <Spinner v-if="busy" class="size-4" />
+        <!-- Every per-site action lives in the details sidebar this opens; the
+             card keeps only the inline shortcuts (open, HTTPS, and the WPA
+             one-click login chip when the site has it enabled). -->
         <Button
           variant="ghost"
           size="icon"
-          :aria-label="openTitle(site, report)"
-          :title="openTitle(site, report)"
-          @click="openInBrowser(siteUrl(site, report))"
+          :aria-label="`Edit ${site.name}`"
+          :title="`Edit ${site.name}`"
+          @click="emit('edit', site)"
         >
-          <ExternalLink class="size-4" />
+          <Pencil class="size-4" />
         </Button>
-        <DropdownMenu>
-          <DropdownMenuTrigger as-child>
-            <Button variant="ghost" size="icon" :aria-label="`Actions for ${site.name}`">
-              <MoreHorizontal class="size-4" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem :disabled="busy" @select="emit('edit', site)">
-              <Pencil class="size-4" /> Edit…
-            </DropdownMenuItem>
-            <DropdownMenuItem :disabled="busy" @select="emit('manageDomains', site)">
-              <Network class="size-4" /> Manage domains…
-            </DropdownMenuItem>
-            <DropdownMenuItem @select="openInBrowser(siteUrl(site, report))">
-              <ExternalLink class="size-4" /> Open in browser
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              v-if="site.is_wordpress"
-              title="Signs you in automatically when auto-login is enabled"
-              @select="openWpAdmin(site)"
-            >
-              <UserRound class="size-4" /> WP Admin
-            </DropdownMenuItem>
-            <DropdownMenuItem @select="openPath(site.document_root)">
-              <FolderOpen class="size-4" /> Reveal folder
-            </DropdownMenuItem>
-            <DropdownMenuItem :disabled="sharing" @select="emit('share', site)">
-              <Globe class="size-4" /> Share publicly…
-            </DropdownMenuItem>
-            <!-- Only linked sites are removable here (by name). A parked site is
-                 removed by un-parking its folder. -->
-            <template v-if="site.kind === 'linked'">
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                :disabled="busy"
-                class="text-destructive focus:bg-destructive/10 focus:text-destructive"
-                @select="emit('unlink', site)"
-              >
-                <Trash2 class="size-4" /> Unlink
-              </DropdownMenuItem>
-            </template>
-          </DropdownMenuContent>
-        </DropdownMenu>
       </div>
     </div>
 
@@ -212,7 +137,7 @@ async function openWpAdmin(s: SiteEntry): Promise<void> {
         type="button"
         class="inline-flex items-center rounded-md bg-warning/10 px-1.5 py-0.5 text-[11px] font-medium text-warning transition-opacity hover:opacity-70"
         :title="`One-click login enabled - signs in as ${site.wp_auto_login_user || 'the site admin'}`"
-        @click="openWpAdmin(site)"
+        @click="openWpAdmin(site, report)"
       >
         WPA
       </button>

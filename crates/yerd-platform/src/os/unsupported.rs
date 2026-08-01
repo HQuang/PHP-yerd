@@ -13,8 +13,29 @@ use crate::paths::{Paths, PlatformDirs};
 use crate::port_binder::{BoundPort, PortBinder, PortPair};
 use crate::port_redirect::PortRedirector;
 use crate::resolver::ResolverInstaller;
+use crate::terminal::TerminalLauncher;
 use crate::trust_store::{CaFingerprint, NssOutcome, TrustStore};
 use crate::PlatformError;
+
+/// Stub terminal launcher for unsupported OSes.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct UnsupportedTerminalLauncher;
+
+impl UnsupportedTerminalLauncher {
+    /// Construct.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl TerminalLauncher for UnsupportedTerminalLauncher {
+    fn open_terminal(&self, _: &Path) -> Result<(), PlatformError> {
+        Err(PlatformError::Unsupported {
+            operation: ops::OPEN_TERMINAL,
+        })
+    }
+}
 
 /// Stub `Paths` for unsupported OSes.
 #[derive(Debug, Default, Clone, Copy)]

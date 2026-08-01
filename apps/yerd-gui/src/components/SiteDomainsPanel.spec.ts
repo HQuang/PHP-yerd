@@ -19,13 +19,8 @@ vi.mock("@/composables/useToast", () => ({
   useToast: () => ({ success: toastSuccess, error: toastError }),
 }));
 
-import ManageDomainsModal from "./ManageDomainsModal.vue";
+import SiteDomainsPanel from "./SiteDomainsPanel.vue";
 import type { SiteEntry } from "@/ipc/types";
-
-// Modal teleports to <body>; stub it to render both slots inline so queries work.
-const ModalStub = {
-  template: '<div><slot /><slot name="footer" :close="() => {}" /></div>',
-};
 
 function site(overrides: Partial<SiteEntry> = {}): SiteEntry {
   return {
@@ -38,14 +33,11 @@ function site(overrides: Partial<SiteEntry> = {}): SiteEntry {
   };
 }
 
-function mountModal(s: SiteEntry) {
-  return mount(ManageDomainsModal, {
-    props: { open: true, site: s, tld: "test" },
-    global: { stubs: { Modal: ModalStub } },
-  });
+function mountPanel(s: SiteEntry) {
+  return mount(SiteDomainsPanel, { props: { site: s, tld: "test" } });
 }
 
-function rows(wrapper: ReturnType<typeof mountModal>) {
+function rows(wrapper: ReturnType<typeof mountPanel>) {
   return wrapper.findAll("li");
 }
 
@@ -58,9 +50,9 @@ beforeEach(() => {
   toastError.mockReset();
 });
 
-describe("ManageDomainsModal — default site", () => {
+describe("SiteDomainsPanel — default site", () => {
   it("synthesizes the apex row, marks it primary, and disables its removal", () => {
-    const wrapper = mountModal(site());
+    const wrapper = mountPanel(site());
     const rs = rows(wrapper);
     expect(rs).toHaveLength(1);
     expect(rs[0].text()).toContain("blog.test");
@@ -74,7 +66,7 @@ describe("ManageDomainsModal — default site", () => {
   });
 });
 
-describe("ManageDomainsModal — customised site", () => {
+describe("SiteDomainsPanel — customised site", () => {
   const customised = () =>
     site({
       primary_domain: "corp.test",
@@ -82,7 +74,7 @@ describe("ManageDomainsModal — customised site", () => {
     });
 
   it("badges the primary by value, offers Make primary only on non-primary exacts", () => {
-    const wrapper = mountModal(customised());
+    const wrapper = mountPanel(customised());
     const rs = rows(wrapper);
     expect(rs).toHaveLength(3);
     const corp = rs.find((r) => r.text().includes("corp.test"))!;
@@ -94,7 +86,7 @@ describe("ManageDomainsModal — customised site", () => {
   });
 
   it("Make primary calls setPrimaryDomain and emits changed", async () => {
-    const wrapper = mountModal(customised());
+    const wrapper = mountPanel(customised());
     const blog = rows(wrapper).find((r) => r.text().startsWith("blog.test"))!;
     await blog.find("button").trigger("click");
     await Promise.resolve();
@@ -103,7 +95,7 @@ describe("ManageDomainsModal — customised site", () => {
   });
 
   it("removing an alias calls removeDomain (multiple exacts, so not disabled)", async () => {
-    const wrapper = mountModal(customised());
+    const wrapper = mountPanel(customised());
     const removeBtn = wrapper.find('[aria-label="Remove *.blog.test"]');
     expect((removeBtn.element as HTMLButtonElement).disabled).toBe(false);
     await removeBtn.trigger("click");
@@ -112,9 +104,9 @@ describe("ManageDomainsModal — customised site", () => {
   });
 });
 
-describe("ManageDomainsModal — add alias", () => {
+describe("SiteDomainsPanel — add alias", () => {
   it("gates the Add button on shape and sends a valid domain", async () => {
-    const wrapper = mountModal(site());
+    const wrapper = mountPanel(site());
     const input = wrapper.find("#add-domain");
     const addBtn = wrapper.findAll("button").find((b) => b.text().includes("Add"))!;
 
@@ -129,7 +121,7 @@ describe("ManageDomainsModal — add alias", () => {
   });
 
   it("accepts a wildcard alias", async () => {
-    const wrapper = mountModal(site());
+    const wrapper = mountPanel(site());
     const input = wrapper.find("#add-domain");
     const addBtn = wrapper.findAll("button").find((b) => b.text().includes("Add"))!;
     await input.setValue("*.blog.test");
@@ -140,9 +132,9 @@ describe("ManageDomainsModal — add alias", () => {
   });
 });
 
-describe("ManageDomainsModal — reset, clear, hints, shadow", () => {
+describe("SiteDomainsPanel — reset, clear, hints, shadow", () => {
   it("Reset is enabled for a customised site and calls resetDomains", async () => {
-    const wrapper = mountModal(site({ primary_domain: "corp.test", domains: ["corp.test"] }));
+    const wrapper = mountPanel(site({ primary_domain: "corp.test", domains: ["corp.test"] }));
     const reset = wrapper.findAll("button").find((b) => b.text().includes("Reset to default"))!;
     expect((reset.element as HTMLButtonElement).disabled).toBe(false);
     await reset.trigger("click");
@@ -152,7 +144,7 @@ describe("ManageDomainsModal — reset, clear, hints, shadow", () => {
   });
 
   it("clears the add field after a successful add", async () => {
-    const wrapper = mountModal(site());
+    const wrapper = mountPanel(site());
     const input = wrapper.find("#add-domain");
     await input.setValue("api.blog.test");
     const addBtn = wrapper.findAll("button").find((b) => b.text().includes("Add"))!;
@@ -163,7 +155,7 @@ describe("ManageDomainsModal — reset, clear, hints, shadow", () => {
   });
 
   it("shows a non-blocking TLD hint but keeps Add enabled for a wrong-TLD domain", async () => {
-    const wrapper = mountModal(site());
+    const wrapper = mountPanel(site());
     const input = wrapper.find("#add-domain");
     const addBtn = wrapper.findAll("button").find((b) => b.text().includes("Add"))!;
     await input.setValue("corp.dev");
@@ -172,7 +164,7 @@ describe("ManageDomainsModal — reset, clear, hints, shadow", () => {
   });
 
   it("surfaces an apex-shadowed warning", () => {
-    const wrapper = mountModal(site({ apex_shadowed_by: "shop" }));
+    const wrapper = mountPanel(site({ apex_shadowed_by: "shop" }));
     expect(wrapper.text()).toContain("shop");
     expect(wrapper.text()).toContain("blog.test is currently served by");
   });
@@ -180,7 +172,7 @@ describe("ManageDomainsModal — reset, clear, hints, shadow", () => {
   it("locks out a second action while one is in flight", async () => {
     let release!: () => void;
     addDomain.mockReturnValue(new Promise<void>((r) => (release = r)));
-    const wrapper = mountModal(
+    const wrapper = mountPanel(
       site({ primary_domain: "corp.test", domains: ["blog.test", "corp.test"] }),
     );
     await wrapper.find("#add-domain").setValue("api.blog.test");
@@ -193,10 +185,10 @@ describe("ManageDomainsModal — reset, clear, hints, shadow", () => {
   });
 });
 
-describe("ManageDomainsModal — error surfacing", () => {
+describe("SiteDomainsPanel — error surfacing", () => {
   it("toasts the daemon message when an action fails", async () => {
     setPrimaryDomain.mockRejectedValue(new Error("already routes to shop"));
-    const wrapper = mountModal(
+    const wrapper = mountPanel(
       site({ primary_domain: "corp.test", domains: ["blog.test", "corp.test"] }),
     );
     const blog = rows(wrapper).find((r) => r.text().startsWith("blog.test"))!;

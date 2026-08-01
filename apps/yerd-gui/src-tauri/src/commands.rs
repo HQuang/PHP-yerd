@@ -13,6 +13,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::Manager;
 use yerd_core::PhpVersion;
 use yerd_ipc::{ErrorCode, Request, Response};
+use yerd_platform::TerminalLauncher;
 
 use crate::error::GuiError;
 use crate::ipc::{exchange, exchange_timeout};
@@ -953,6 +954,22 @@ pub async fn job_cancel(job_id: String) -> Result<Response, GuiError> {
 }
 
 // ── host helpers ───────────────────────────────────────────────────────────
+
+/// Validate a project directory and delegate terminal launching to the active
+/// OS implementation in `yerd-platform`.
+#[tauri::command]
+pub async fn open_terminal(path: String) -> Result<(), GuiError> {
+    let path = PathBuf::from(path);
+    if !path.is_dir() {
+        return Err(GuiError::internal(format!(
+            "project path is not a directory: {}",
+            path.display()
+        )));
+    }
+    yerd_platform::ActiveTerminalLauncher::new()
+        .open_terminal(&path)
+        .map_err(|error| GuiError::internal(error.to_string()))
+}
 
 /// Persist a mail attachment into the app cache and return its absolute path.
 ///

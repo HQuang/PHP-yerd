@@ -15,9 +15,11 @@
 #![allow(clippy::similar_names)]
 
 use std::fs;
+use std::io::Write;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use directories::ProjectDirs;
 
@@ -30,8 +32,98 @@ use crate::port_redirect::{
 };
 use crate::pure::{pem_match, pf_anchor, port_plan, ps_metrics, resolver_file};
 use crate::resolver::ResolverInstaller;
+use crate::terminal::TerminalLauncher;
 use crate::trust_store::{BrowserCaTrust, CaFingerprint, NssOutcome, TrustStore};
-use crate::{BindPairErrorReason, PlatformError, ResolverErrorReason, TrustStoreErrorReason};
+use crate::{
+    BindPairErrorReason, PlatformError, ResolverErrorReason, TerminalErrorReason,
+    TrustStoreErrorReason,
+};
+
+/// macOS terminal launcher.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct MacosTerminalLauncher;
+
+impl MacosTerminalLauncher {
+    /// Construct.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl TerminalLauncher for MacosTerminalLauncher {
+    fn open_terminal(&self, path: &Path) -> Result<(), PlatformError> {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| PlatformError::Terminal {
+                reason: TerminalErrorReason::PrepareLauncher(std::io::Error::other(e)),
+            })?
+            .as_millis();
+        let quoted_path = shell_quote(&path.to_string_lossy());
+        let script = format!(
+            "#!/bin/sh\nrm -f -- \"$0\"\ncd -- {quoted_path}\nexec \"${{SHELL:-/bin/zsh}}\" -l\n"
+        );
+
+        let mut created = None;
+        for attempt in 0u32..100 {
+            let script_path = std::env::temp_dir().join(format!(
+                "yerd-terminal-{}-{stamp}-{attempt}.command",
+                std::process::id()
+            ));
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o700)
+                .open(&script_path)
+            {
+                Ok(file) => {
+                    created = Some((script_path, file));
+                    break;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(e) => {
+                    return Err(PlatformError::Terminal {
+                        reason: TerminalErrorReason::CreateLauncher(e),
+                    });
+                }
+            }
+        }
+        let Some((script_path, mut file)) = created else {
+            return Err(PlatformError::Terminal {
+                reason: TerminalErrorReason::CreateLauncher(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    "could not create a unique terminal launcher",
+                )),
+            });
+        };
+        if let Err(e) = file
+            .write_all(script.as_bytes())
+            .and_then(|()| fs::set_permissions(&script_path, fs::Permissions::from_mode(0o700)))
+        {
+            let _ = fs::remove_file(&script_path);
+            return Err(PlatformError::Terminal {
+                reason: TerminalErrorReason::PrepareLauncher(e),
+            });
+        }
+        drop(file);
+
+        match Command::new("open").arg(&script_path).spawn() {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                let _ = fs::remove_file(&script_path);
+                Err(PlatformError::Terminal {
+                    reason: TerminalErrorReason::OpenLauncher(e),
+                })
+            }
+        }
+    }
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
 
 /// macOS `Paths` implementation.
 #[derive(Debug, Default, Clone, Copy)]

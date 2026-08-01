@@ -1,7 +1,7 @@
 //! OS abstraction layer for Yerd.
 //!
 //! The core traits live here - [`Paths`], [`TrustStore`], [`ResolverInstaller`],
-//! [`PortBinder`], and [`PortRedirector`] - each with a single thin
+//! [`PortBinder`], [`PortRedirector`], and [`TerminalLauncher`] - each with a single thin
 //! implementation per OS selected by `#[cfg(target_os = ...)]`. macOS and Linux
 //! ship in Phase 1;
 //! Windows compiles against the [`os::unsupported`] stub that returns
@@ -34,12 +34,16 @@ pub mod port_binder;
 pub mod port_redirect;
 pub mod pure;
 pub mod resolver;
+pub mod terminal;
 pub mod trust_store;
 
 mod os;
 
 pub use detect::{gather_project_signals, FsSignalSource, ProjectSignalSource};
-pub use error::{BindPairErrorReason, PlatformError, ResolverErrorReason, TrustStoreErrorReason};
+pub use error::{
+    BindPairErrorReason, PlatformError, ResolverErrorReason, TerminalErrorReason,
+    TrustStoreErrorReason,
+};
 pub use helper::{ArgvParseError, HelperInvocation};
 pub use lan_ip::{ActiveLanIpProvider, FakeLanIpProvider, LanIpProvider};
 pub use metrics::SystemMetrics;
@@ -47,11 +51,12 @@ pub use paths::{Paths, PlatformDirs};
 pub use port_binder::{BoundPort, PortBinder, PortPair};
 pub use port_redirect::PortRedirector;
 pub use resolver::ResolverInstaller;
+pub use terminal::TerminalLauncher;
 pub use trust_store::{
     BrowserCaTrust, CaFingerprint, FingerprintParseError, NssFailure, NssOutcome, TrustStore,
 };
 
 pub use os::active::{
     ActivePaths, ActivePortBinder, ActivePortRedirector, ActiveResolverInstaller,
-    ActiveSystemMetrics, ActiveTrustStore,
+    ActiveSystemMetrics, ActiveTerminalLauncher, ActiveTrustStore,
 };

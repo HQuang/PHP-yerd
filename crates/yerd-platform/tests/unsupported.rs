@@ -14,8 +14,9 @@ use std::net::{Ipv4Addr, SocketAddr};
 mod common;
 
 use yerd_platform::{
-    ActivePaths, ActivePortBinder, ActiveResolverInstaller, ActiveTrustStore, Paths, PlatformError,
-    PortBinder, ResolverInstaller, TrustStore,
+    ActivePaths, ActivePortBinder, ActiveResolverInstaller, ActiveTerminalLauncher,
+    ActiveTrustStore, Paths, PlatformError, PortBinder, ResolverInstaller, TerminalLauncher,
+    TrustStore,
 };
 
 use common::random_fingerprint;
@@ -74,6 +75,16 @@ fn resolver_unsupported() {
     ));
     assert!(matches!(
         r.is_installed("test", "127.0.0.1:1053".parse().unwrap())
+            .unwrap_err(),
+        PlatformError::Unsupported { .. }
+    ));
+}
+
+#[test]
+fn terminal_launcher_unsupported() {
+    assert!(matches!(
+        ActiveTerminalLauncher
+            .open_terminal(std::path::Path::new("/srv/site"))
             .unwrap_err(),
         PlatformError::Unsupported { .. }
     ));

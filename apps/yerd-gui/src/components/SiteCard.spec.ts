@@ -13,18 +13,6 @@ vi.mock("@/ipc/client", () => ({
 import SiteCard from "./SiteCard.vue";
 import type { SiteEntry, StatusReport } from "@/ipc/types";
 
-const DropdownMenuStub = { template: "<div><slot /></div>" };
-const DropdownMenuItemStub = {
-  template: '<div class="dropdown-item-stub" @click="$emit(\'select\')"><slot /></div>',
-};
-const dropdownStubs = {
-  DropdownMenu: DropdownMenuStub,
-  DropdownMenuTrigger: DropdownMenuStub,
-  DropdownMenuContent: DropdownMenuStub,
-  DropdownMenuItem: DropdownMenuItemStub,
-  DropdownMenuSeparator: { template: "<hr />" },
-};
-
 function wpSite(overrides: Partial<SiteEntry> = {}): SiteEntry {
   return {
     name: "blog",
@@ -49,20 +37,16 @@ function boundReport(): StatusReport {
 }
 
 function mountCard(site: SiteEntry, report: StatusReport | null) {
-  return mount(SiteCard, {
-    props: { site, report, tld: "test" },
-    global: { stubs: dropdownStubs },
-  });
+  return mount(SiteCard, { props: { site, report, tld: "test" } });
 }
 
-/** Clicks the always-visible "WP Admin" dropdown item (works regardless of
- *  `wp_auto_login`, unlike the WPA quick-action chip which only renders when
- *  auto-login is on). */
-async function clickWpAdminMenuItem(wrapper: ReturnType<typeof mountCard>) {
-  const items = wrapper.findAll(".dropdown-item-stub");
-  const item = items.find((i) => i.text().includes("WP Admin"));
-  if (!item) throw new Error("WP Admin dropdown item not rendered");
-  await item.trigger("click");
+/** Clicks the WPA quick-action chip, which only renders when auto-login is on.
+ *  The always-available WP Admin entry point now lives in the details sidebar
+ *  (see SiteDetailsSidebar.spec.ts); both go through `openWpAdmin`. */
+async function clickWpaChip(wrapper: ReturnType<typeof mountCard>) {
+  const chip = wrapper.findAll("button").find((b) => b.text() === "WPA");
+  if (!chip) throw new Error("WPA chip not rendered");
+  await chip.trigger("click");
 }
 
 describe("SiteCard openWpAdmin gating", () => {
@@ -76,20 +60,10 @@ describe("SiteCard openWpAdmin gating", () => {
     const site = wpSite({ wp_auto_login: true });
     const wrapper = mountCard(site, null); // no report => isUnbound() is true
 
-    await clickWpAdminMenuItem(wrapper);
+    await clickWpaChip(wrapper);
 
     expect(mintWordPressLoginToken).not.toHaveBeenCalled();
     expect(openInBrowser).toHaveBeenCalledWith("http://localhost:8080/~blog.test/wp-admin/");
-  });
-
-  it("skips minting and opens the plain link when auto-login is off", async () => {
-    const site = wpSite({ wp_auto_login: false });
-    const wrapper = mountCard(site, boundReport());
-
-    await clickWpAdminMenuItem(wrapper);
-
-    expect(mintWordPressLoginToken).not.toHaveBeenCalled();
-    expect(openInBrowser).toHaveBeenCalledWith("http://blog.test/wp-admin/");
   });
 
   it("mints a token and opens the pre-authenticated link when bound and auto-login is on", async () => {
@@ -97,7 +71,7 @@ describe("SiteCard openWpAdmin gating", () => {
     mintWordPressLoginToken.mockResolvedValue("sekrit-token");
     const wrapper = mountCard(site, boundReport());
 
-    await clickWpAdminMenuItem(wrapper);
+    await clickWpaChip(wrapper);
 
     expect(mintWordPressLoginToken).toHaveBeenCalledWith("blog");
     expect(openInBrowser).toHaveBeenCalledWith(
@@ -110,23 +84,39 @@ describe("SiteCard openWpAdmin gating", () => {
     mintWordPressLoginToken.mockRejectedValue(new Error("daemon unreachable"));
     const wrapper = mountCard(site, boundReport());
 
-    await clickWpAdminMenuItem(wrapper);
+    await clickWpaChip(wrapper);
 
     expect(mintWordPressLoginToken).toHaveBeenCalledWith("blog");
     expect(openInBrowser).toHaveBeenCalledWith("http://blog.test/wp-admin/");
   });
 
-  it("the WPA quick-action chip drives the same gating", async () => {
-    const site = wpSite({ wp_auto_login: true });
-    mintWordPressLoginToken.mockResolvedValue("sekrit-token");
+  it("hides the WPA chip when auto-login is off", () => {
+    const wrapper = mountCard(wpSite({ wp_auto_login: false }), boundReport());
+
+    expect(wrapper.findAll("button").find((b) => b.text() === "WPA")).toBeUndefined();
+  });
+});
+
+describe("SiteCard actions", () => {
+  beforeEach(() => {
+    mintWordPressLoginToken.mockReset();
+    openInBrowser.mockReset();
+    openPath.mockReset();
+  });
+
+  it("opens the site details from the edit action", async () => {
+    const site = wpSite();
     const wrapper = mountCard(site, boundReport());
 
-    const chip = wrapper.findAll("button").find((b) => b.text() === "WPA");
-    if (!chip) throw new Error("WPA chip not rendered");
-    await chip.trigger("click");
+    await wrapper.find('[aria-label="Edit blog"]').trigger("click");
 
-    expect(openInBrowser).toHaveBeenCalledWith(
-      "http://blog.test/wp-admin/?yerd_login_token=sekrit-token",
-    );
+    expect(wrapper.emitted("edit")).toEqual([[site]]);
+    expect(openInBrowser).not.toHaveBeenCalled();
+  });
+
+  it("no longer renders a per-site actions menu", () => {
+    const wrapper = mountCard(wpSite(), boundReport());
+
+    expect(wrapper.find('[aria-label="Actions for blog"]').exists()).toBe(false);
   });
 });

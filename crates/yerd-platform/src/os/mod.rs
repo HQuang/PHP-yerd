@@ -18,7 +18,8 @@ pub(crate) mod active {
         LinuxPaths as ActivePaths, LinuxPortBinder as ActivePortBinder,
         LinuxPortRedirector as ActivePortRedirector,
         LinuxResolverInstaller as ActiveResolverInstaller,
-        LinuxSystemMetrics as ActiveSystemMetrics, LinuxTrustStore as ActiveTrustStore,
+        LinuxSystemMetrics as ActiveSystemMetrics, LinuxTerminalLauncher as ActiveTerminalLauncher,
+        LinuxTrustStore as ActiveTrustStore,
     };
 
     #[cfg(target_os = "macos")]
@@ -26,7 +27,8 @@ pub(crate) mod active {
         MacosPaths as ActivePaths, MacosPortBinder as ActivePortBinder,
         MacosPortRedirector as ActivePortRedirector,
         MacosResolverInstaller as ActiveResolverInstaller,
-        MacosSystemMetrics as ActiveSystemMetrics, MacosTrustStore as ActiveTrustStore,
+        MacosSystemMetrics as ActiveSystemMetrics, MacosTerminalLauncher as ActiveTerminalLauncher,
+        MacosTrustStore as ActiveTrustStore,
     };
 
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -34,6 +36,8 @@ pub(crate) mod active {
         UnsupportedPaths as ActivePaths, UnsupportedPortBinder as ActivePortBinder,
         UnsupportedPortRedirector as ActivePortRedirector,
         UnsupportedResolverInstaller as ActiveResolverInstaller,
-        UnsupportedSystemMetrics as ActiveSystemMetrics, UnsupportedTrustStore as ActiveTrustStore,
+        UnsupportedSystemMetrics as ActiveSystemMetrics,
+        UnsupportedTerminalLauncher as ActiveTerminalLauncher,
+        UnsupportedTrustStore as ActiveTrustStore,
     };
 }

@@ -19,3 +19,4 @@ pub mod resolved_drop_in;
 pub mod resolver_file;
 pub mod shell_profile;
 pub mod system_roots;
+pub mod terminal_spec;

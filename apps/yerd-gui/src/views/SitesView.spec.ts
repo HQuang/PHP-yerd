@@ -57,13 +57,13 @@ async function openEditFor(wrapper: Awaited<ReturnType<typeof mountSites>>, site
   await flushPromises();
 }
 
-describe("SitesView WordPress auto-login edit dialog", () => {
+describe("SitesView WordPress auto-login controls", () => {
   beforeEach(() => {
     invokeMock.mockReset();
     resetResourceCache();
   });
 
-  it("loads the admin-user picker for the site the dialog was opened for", async () => {
+  it("loads the admin-user picker for the site the sidebar was opened for", async () => {
     const alpha = wpSite("alpha");
     invokeMock.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
       if (cmd === "list_sites") return Promise.resolve({ type: "sites", sites: [alpha] });
@@ -79,7 +79,7 @@ describe("SitesView WordPress auto-login edit dialog", () => {
     const wrapper = await mountSites();
     await openEditFor(wrapper, alpha);
 
-    const select = wrapper.find("#edit-wp-admin-user");
+    const select = wrapper.find("#site-wp-admin-user");
     expect(select.exists()).toBe(true);
     expect(select.attributes("disabled")).toBeUndefined();
     const labels = select.findAll("option").map((o) => o.text());
@@ -112,7 +112,7 @@ describe("SitesView WordPress auto-login edit dialog", () => {
     alphaUsers.resolve(usersEnvelope(["alpha-editor"]));
     await flushPromises();
 
-    const select = wrapper.find("#edit-wp-admin-user");
+    const select = wrapper.find("#site-wp-admin-user");
     const labels = select.findAll("option").map((o) => o.text());
     expect(labels).toEqual(["Earliest admin (default)", "beta-editor"]);
   });
@@ -132,7 +132,7 @@ describe("SitesView WordPress auto-login edit dialog", () => {
     const wrapper = await mountSites();
     await openEditFor(wrapper, alpha);
 
-    const select = wrapper.find<HTMLSelectElement>("#edit-wp-admin-user");
+    const select = wrapper.find<HTMLSelectElement>("#site-wp-admin-user");
     // The select's bound value must match the "Loading users…" placeholder's
     // value (""), not the site's already-configured "editor" - a bound value
     // with no matching <option> renders as a blank control, not the intended
@@ -142,7 +142,7 @@ describe("SitesView WordPress auto-login edit dialog", () => {
 
     pending.resolve(usersEnvelope(["editor"]));
     await flushPromises();
-    const settled = wrapper.find<HTMLSelectElement>("#edit-wp-admin-user");
+    const settled = wrapper.find<HTMLSelectElement>("#site-wp-admin-user");
     expect(settled.element.value).toBe("editor");
   });
 
@@ -162,7 +162,7 @@ describe("SitesView WordPress auto-login edit dialog", () => {
     const wrapper = await mountSites();
     await openEditFor(wrapper, alpha);
 
-    const select = wrapper.find("#edit-wp-admin-user");
+    const select = wrapper.find("#site-wp-admin-user");
     expect(select.attributes("disabled")).toBeDefined();
     const labels = select.findAll("option").map((o) => o.text());
     expect(labels).toEqual(["Error: boom"]);
