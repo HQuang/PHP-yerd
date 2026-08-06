@@ -27,7 +27,7 @@ use crate::forward::{
 };
 use crate::pure::cgi_params;
 use crate::pure::query;
-use crate::pure::redirect::build_redirect_uri;
+use crate::pure::redirect::{build_redirect_uri, directory_redirect_location};
 use crate::pure::unbound::{self, PickerSite};
 use crate::tls::build_server_config;
 use crate::traits::{BackendResolver, CertStore, LoginTokenConsumer};
@@ -477,11 +477,14 @@ async fn dispatch<R: BackendResolver, L: LoginTokenConsumer>(
 ///
 /// The one-click `WordPress` login token is consumed here via
 /// [`consume_login_token_if_present`] - only ever on `/wp-admin`, only when a
-/// token is both present and valid for *this* site. This runs strictly after
-/// [`dispatch`]'s HTTP->HTTPS redirect check, so a secure site's token is
-/// never burned by the 301 itself. On success the token is stripped from the
-/// forwarded URI (never reaching PHP or logging) and `auto_prepend_file` plus
-/// the resolved target user are added for this one request only.
+/// token is both present and valid for *this* site, and only once every
+/// earlier answer (HTTP->HTTPS `301` in [`dispatch`], static file, symlink
+/// `403`, trailing-slash `301`) has been ruled out. A redirect must never
+/// burn the token: its `Location` keeps the query intact, so the token
+/// survives to the followed request and is consumed there. On success the
+/// token is stripped from the forwarded URI (never reaching PHP or logging)
+/// and `auto_prepend_file` plus the resolved target user are added for this
+/// one request only.
 #[allow(clippy::too_many_arguments)]
 async fn serve_php_fpm<R: BackendResolver, L: LoginTokenConsumer>(
     mut req: Request<Incoming>,
@@ -497,15 +500,6 @@ async fn serve_php_fpm<R: BackendResolver, L: LoginTokenConsumer>(
     https: bool,
     symlink_protection: bool,
 ) -> Result<Response<BoxBody>, ProxyError> {
-    let login_target_user = consume_login_token_if_present(&mut req, site.name(), login_tokens);
-    let auto_login = match (&login_target_user, login_prepend_script) {
-        (Some(target_user), Some(prepend_script)) => Some(cgi_params::AutoLoginParams {
-            prepend_script,
-            target_user: target_user.as_str(),
-        }),
-        _ => None,
-    };
-
     let outcome = static_file::try_serve(
         req.method(),
         req.uri().path(),
@@ -528,7 +522,7 @@ async fn serve_php_fpm<R: BackendResolver, L: LoginTokenConsumer>(
     if let Some(resp) = resolve_static_outcome(outcome) {
         return Ok(resp);
     }
-    let script_rel = resolve_script_if_allowed(
+    let resolution = resolve_script_if_allowed(
         resolver,
         site,
         req.uri().path(),
@@ -537,6 +531,24 @@ async fn serve_php_fpm<R: BackendResolver, L: LoginTokenConsumer>(
         symlink_protection,
     )
     .await;
+    let script_rel = match resolution {
+        script_file::ScriptResolution::Script(rel) => Some(rel),
+        script_file::ScriptResolution::DirectoryRedirect
+            if *req.method() == Method::GET || *req.method() == Method::HEAD =>
+        {
+            return trailing_slash_redirect(&req);
+        }
+        script_file::ScriptResolution::DirectoryRedirect
+        | script_file::ScriptResolution::Fallback => None,
+    };
+    let login_target_user = consume_login_token_if_present(&mut req, site.name(), login_tokens);
+    let auto_login = match (&login_target_user, login_prepend_script) {
+        (Some(target_user), Some(prepend_script)) => Some(cgi_params::AutoLoginParams {
+            prepend_script,
+            target_user: target_user.as_str(),
+        }),
+        _ => None,
+    };
     fcgi::forward(
         req,
         backend,
@@ -556,9 +568,12 @@ fn path_and_query_or_root(uri: &http::Uri) -> &str {
 }
 
 /// [`script_file::resolve_script`], gated by
-/// [`BackendResolver::allows_direct_script_execution`] - `None` (fall back to
-/// the site root's `index.php`) for any site the resolver hasn't opted in,
-/// without touching the filesystem to find out.
+/// [`BackendResolver::allows_direct_script_execution`] -
+/// [`script_file::ScriptResolution::Fallback`] (send the request to the site
+/// root's `index.php`) for any site the resolver hasn't opted in, without
+/// touching the filesystem to find out. Front-controller sites route `/foo`
+/// themselves, so they must get neither direct execution nor the
+/// trailing-slash redirect.
 async fn resolve_script_if_allowed<R: BackendResolver>(
     resolver: &R,
     site: &yerd_core::Site,
@@ -566,18 +581,20 @@ async fn resolve_script_if_allowed<R: BackendResolver>(
     served_root: &std::path::Path,
     allowed_root: &std::path::Path,
     symlink_protection: bool,
-) -> Option<std::path::PathBuf> {
+) -> script_file::ScriptResolution {
     if !resolver.allows_direct_script_execution(site).await {
-        return None;
+        return script_file::ScriptResolution::Fallback;
     }
     script_file::resolve_script(uri_path, served_root, allowed_root, symlink_protection).await
 }
 
 /// One-click `WordPress` login: only ever considered on `/wp-admin`, only
 /// ever acted on when a token is both present and valid for `site_name`.
-/// Consuming happens here - the caller must only call this strictly after the
-/// HTTP->HTTPS redirect check, so a secure site's token is never burned by
-/// the 301 itself. On success, strips the token from `req`'s URI (so it never
+/// Consuming happens here - the caller must only call this once the request
+/// is definitely being forwarded to FastCGI, strictly after the HTTP->HTTPS
+/// redirect check and every other early answer (static file, symlink `403`,
+/// trailing-slash `301`), so no redirect or non-PHP response ever burns the
+/// token. On success, strips the token from `req`'s URI (so it never
 /// reaches PHP or request logging) and returns `Some(target_user)` (`""` = no
 /// preference); the caller decides what "success" means for its own request
 /// (adding `auto_prepend_file`/`YERD_LOGIN_USER`).
@@ -628,12 +645,39 @@ fn https_redirect(
         .uri()
         .path_and_query()
         .map_or("/", http::uri::PathAndQuery::as_str);
-    let loc = build_redirect_uri(host, pq, port);
+    moved_permanently(&build_redirect_uri(host, pq, port))
+}
+
+/// `301` to the trailing-slash form of this request's path, for a path that
+/// names a real directory on disk (`/sub` -> `/sub/`). What Apache's
+/// `DirectorySlash` and nginx's `try_files $uri $uri/` do, and what legacy
+/// multi-directory PHP apps rely on: without it a subdirectory request
+/// silently executes the *root* `index.php`, so an app whose front page
+/// redirects into a subdirectory loops forever.
+///
+/// Sent with `Cache-Control: no-store`, deliberately diverging from
+/// Apache/nginx: a bare `301` is cached by browsers indefinitely, and on a
+/// dev box the answer stops being true the moment the directory is deleted
+/// or the site is switched to front-controller mode - Yerd has no way to
+/// evict it afterwards. The `Location` may also carry a one-shot login
+/// token, which has no business in a disk cache.
+fn trailing_slash_redirect(req: &Request<Incoming>) -> Result<Response<BoxBody>, ProxyError> {
+    let mut resp = moved_permanently(&directory_redirect_location(path_and_query_or_root(
+        req.uri(),
+    )))?;
+    resp.headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(resp)
+}
+
+/// A bodyless `301` to `location`. Shared by both redirect kinds so they can't
+/// drift in status or `Location` handling.
+fn moved_permanently(location: &str) -> Result<Response<BoxBody>, ProxyError> {
     Response::builder()
         .status(StatusCode::MOVED_PERMANENTLY)
         .header(
             LOCATION,
-            HeaderValue::from_str(&loc).map_err(|_| ProxyError::BackendProtocol {
+            HeaderValue::from_str(location).map_err(|_| ProxyError::BackendProtocol {
                 source: std::io::Error::other("invalid redirect URI"),
             })?,
         )
