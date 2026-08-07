@@ -44,6 +44,7 @@ pub(crate) const STEPS: &[MigrationStep] = &[
     migrate_v17_to_v18,
     migrate_v18_to_v19,
     migrate_v19_to_v20,
+    migrate_v20_to_v21,
 ];
 
 /// `v0 → v1`: bump the version. v0 predates any shipped config, so there is no
@@ -221,6 +222,13 @@ fn migrate_v19_to_v20(value: &mut Value) -> Result<(), ConfigError> {
     set_version(value, 20)
 }
 
+/// `v20 → v21`: bump the version. v21 added the optional `[route_rules]` table,
+/// which defaults to empty when absent, so an in-place version bump is the
+/// entire migration.
+fn migrate_v20_to_v21(value: &mut Value) -> Result<(), ConfigError> {
+    set_version(value, 21)
+}
+
 /// Set the top-level `version` key, erroring if the root is not a table.
 fn set_version(value: &mut Value, n: i64) -> Result<(), ConfigError> {
     let table = value.as_table_mut().ok_or(ConfigError::Migration {
@@ -290,7 +298,7 @@ mod tests {
 
     #[test]
     fn current_version_pinned() {
-        assert_eq!(crate::CURRENT_VERSION, 20);
+        assert_eq!(crate::CURRENT_VERSION, 21);
     }
 
     #[test]
@@ -319,6 +327,13 @@ mod tests {
         let mut v: Value = toml::from_str("version = 19\n").unwrap();
         migrate_v19_to_v20(&mut v).unwrap();
         assert_eq!(read_version(&v).unwrap(), 20);
+    }
+
+    #[test]
+    fn v20_to_v21_is_a_bare_version_bump() {
+        let mut v: Value = toml::from_str("version = 20\n").unwrap();
+        migrate_v20_to_v21(&mut v).unwrap();
+        assert_eq!(read_version(&v).unwrap(), 21);
     }
 
     #[test]

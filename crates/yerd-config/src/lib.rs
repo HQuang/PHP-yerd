@@ -94,7 +94,10 @@ pub use schema::{
 /// default when absent), also a bare bump. v20 added the optional
 /// `[php.pool]` table ([`PhpSection::pool`]) for per-version FPM pool
 /// settings; it defaults (empty) when absent, so v19→v20 is a bare bump too.
+/// v21 added the optional `[route_rules]` table ([`Config::route_rules`])
+/// holding per-site path-prefix routing rules (prefix → a local target under
+/// the served root); it defaults (empty) when absent, so v20→v21 is a bare bump.
 ///
 /// The per-version detail, including how to hand-edit a file back down for an
 /// older binary, lives in `docs/developer/config-schema-history.md`.
-pub const CURRENT_VERSION: u32 = 20;
+pub const CURRENT_VERSION: u32 = 21;

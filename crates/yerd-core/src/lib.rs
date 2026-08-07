@@ -18,6 +18,7 @@ pub mod php_extensions;
 pub mod php_pool;
 pub mod php_settings;
 mod proxy;
+mod route_rule;
 mod router;
 mod site;
 mod tld;
@@ -45,8 +46,8 @@ pub const CA_COMMON_NAME: &str = "Yerd Local CA";
 pub use detect::{detect, Detection, ProjectSignals};
 pub use domain::{choose_primary, effective_domains, Domain};
 pub use error::{
-    CoreError, DomainErrorReason, PhpVersionErrorReason, ProxyRuleErrorReason, SiteNameErrorReason,
-    TldErrorReason, UpstreamTargetErrorReason,
+    CoreError, DomainErrorReason, PhpVersionErrorReason, ProxyRuleErrorReason,
+    RouteRuleErrorReason, SiteNameErrorReason, TldErrorReason, UpstreamTargetErrorReason,
 };
 pub use net::is_lan_source;
 pub use php::{PhpVersion, FIRST_SUPPORTED_MINOR};
@@ -55,6 +56,7 @@ pub use php_extensions::{ExtError, NameErrorReason, PathErrorReason};
 pub use php_pool::{PoolNameErrorReason, PoolSettingError, PoolValueErrorReason};
 pub use php_settings::{PhpSettingError, ValueErrorReason};
 pub use proxy::{match_rule, ProxyRule, ProxySite, UpstreamTarget};
+pub use route_rule::RouteRule;
 pub use router::{Route, RouterConfig, SiteRouter};
 pub use site::{normalize_site_name, slugify_site_name, Site, SiteKind};
 pub use tld::Tld;

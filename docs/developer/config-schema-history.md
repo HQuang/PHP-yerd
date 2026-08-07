@@ -28,7 +28,29 @@ Each entry below states what changed, whether the daemon's own migration is a ba
 
 ## Version-by-version
 
-### v20 (current)
+### v21 (current)
+
+**Added:** the optional `[route_rules]` table - per-site path-prefix **routing** rules, keyed by site class exactly like `[proxy_rules]` and `[domains]`: `[route_rules.linked.<name>]` by site name, `[route_rules.parked."<docroot>"]` by document-root string. Each rule pairs a URI path `prefix` with a `target` path relative to the site's served root. It defaults to empty when absent, so an uncustomised file omits it entirely.
+
+```toml
+[[route_rules.linked.portal]]
+prefix = "/api"
+target = "api/index.php"
+
+[[route_rules.linked.dashboard]]
+prefix = "/"
+target = "index.html"
+```
+
+A rule applies only when the request matched no real file, i.e. nginx's `try_files $uri $uri/ <target>`. A `.php` target is a nested front controller (issue #196: a Yii or CodeIgniter app mounted inside a legacy portal); any other target is served as a static document, which is how SPA history-API routing works. The `target` is validated as a safe relative path at load, so a hand-edited absolute path or one containing `..` is a hard parse error rather than a silent security hole.
+
+Note this is **not** `[proxy_rules]`: a proxy rule forwards to an HTTP upstream, a routing rule resolves to a file inside the site's own tree.
+
+**Migration from v20:** bare version bump - the table defaults to empty when absent, so a v20 file needs no other change.
+
+**To downgrade to v20:** change `version = 21` to `version = 20` and delete any `[route_rules.*]` tables (a v20 daemon rejects the unknown tables under `deny_unknown_fields`, it doesn't just ignore them). Sites revert to funnelling unmatched requests to the served root's `index.php`.
+
+### v20
 
 **Added:** the optional `[php.pool]` table - per-version FPM pool settings. `[php.pool."<version>"]` holds the pool settings for one installed version; the only key is `max_children`, the ceiling on concurrent PHP workers, accepted between `1` and `1024` and defaulting to `16`. It defaults to empty when absent, so an uncustomised file omits it entirely.
 
