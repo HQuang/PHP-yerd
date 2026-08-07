@@ -456,14 +456,15 @@ api = "Blog"
 
 ### `[domains]`
 
-Per-site domain customization: the primary (canonical) domain plus any additional aliases, subdomains, and wildcards a site answers for. **Empty by default** - the whole `[domains]` table is omitted until you customise a site with [`yerd domain`](./cli/domains). An uncustomised site answers only its default apex `<name>.<tld>`; subdomains do **not** resolve implicitly.
+Domain customization for a site **or a whole-host proxy**: the primary (canonical) domain plus any additional aliases, subdomains, and wildcards it answers for. **Empty by default** - the whole `[domains]` table is omitted until you customise something with [`yerd domain`](./cli/domains). An uncustomised site or proxy answers only its default apex `<name>.<tld>`; subdomains do **not** resolve implicitly.
 
-The table is split by site class, mirroring `[[overrides]]`:
+The table is split by claimant class, the first two mirroring `[[overrides]]`:
 
 | Key                | TOML type                 | Meaning                                                         |
 | ------------------ | ------------------------- | --------------------------------------------------------------- |
 | `[domains.linked]` | table (`name → delta`)    | Deltas for **linked** sites, keyed by site name.                |
 | `[domains.parked]` | table (`docroot → delta`) | Deltas for **parked** sites, keyed by byte-exact document-root. |
+| `[domains.proxy]`  | table (`name → delta`)    | Deltas for **whole-host proxies**, keyed by proxy name.         |
 
 Keying linked by name and parked by document-root matches `[[overrides]]`, so routing survives a directory rename and a parked site keeps its domains without a config record of its own.
 
@@ -498,7 +499,7 @@ Order is preserved on round-trip.
 
 | Field    | TOML type | Meaning                                                         |
 | -------- | --------- | --------------------------------------------------------------- |
-| `name`   | string    | The proxy's DNS label; it answers on `<name>.<tld>`.            |
+| `name`   | string    | One or more dot-separated DNS labels (`reverb`, `api.account`). `<name>.<tld>` is its **default** domain; [`[domains.proxy]`](#domains) can add more and, once another exact domain exists, replace or suppress the default. |
 | `target` | string    | The upstream URL, `http://host:port` or `https://host:port`.    |
 | `secure` | bool      | Whether the proxy is served over HTTPS (toggled by `yerd secure`). |
 

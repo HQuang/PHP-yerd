@@ -2696,16 +2696,30 @@ fn is_self_forward(url: &str, bound_ports: &[u16]) -> bool {
 /// name (mirroring `ListSites`) so the output round-trips through
 /// `yerd proxy remove <site> <prefix>`. A parked docroot with no current site
 /// falls back to the raw key.
+///
+/// Domain fields are reported only for a proxy the router actually holds. A
+/// name-shadowed proxy stays in the config but is never inserted, and the shared
+/// domain maps are keyed by claimant name, so enriching it would report the
+/// shadowing site's domains as the proxy's own.
 async fn list_proxies(state: &DaemonState) -> Response {
     let cfg = state.config.lock().await;
     let router = state.router.read().await;
     let proxies = cfg
         .proxies
         .iter()
-        .map(|p| yerd_ipc::ProxyEntry {
-            name: p.name().to_owned(),
-            target: p.target().to_string(),
-            secure: p.secure(),
+        .map(|p| {
+            let (primary_domain, domains) = if router.proxy(p.name()).is_some() {
+                site_entry_domains(&router, p.name(), cfg.tld.as_str())
+            } else {
+                (None, Vec::new())
+            };
+            yerd_ipc::ProxyEntry {
+                name: p.name().to_owned(),
+                target: p.target().to_string(),
+                secure: p.secure(),
+                primary_domain,
+                domains,
+            }
         })
         .collect();
     let mut rules = Vec::new();
@@ -2866,7 +2880,7 @@ fn resolve_web_root_mutation(
 
     Err(Response::Error {
         code: ErrorCode::NotFound,
-        message: format!("no site named {name_lc}"),
+        message: mutate::not_found_site(new, &name_lc).to_string(),
     })
 }
 
@@ -3068,6 +3082,81 @@ mod tests {
             dispatch(Request::Ping, &state).await,
             Response::Pong
         ));
+    }
+
+    #[tokio::test]
+    async fn list_proxies_reports_domains_only_for_a_customised_proxy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let target = yerd_core::UpstreamTarget::from_url_str("http://127.0.0.1:9011").unwrap();
+        let plain = yerd_core::ProxySite::new("reverb", target.clone()).unwrap();
+        let custom = yerd_core::ProxySite::new("app", target).unwrap();
+        {
+            let mut cfg = state.config.lock().await;
+            cfg.proxies.push(plain.clone());
+            cfg.proxies.push(custom.clone());
+        }
+        {
+            let corp = yerd_core::Domain::parse_subpart("corp").unwrap();
+            let mut router = state.router.write().await;
+            router.insert_proxy(plain).unwrap();
+            router
+                .insert_proxy_with_domains(
+                    custom,
+                    vec![yerd_core::Domain::apex("app"), corp.clone()],
+                    corp,
+                )
+                .unwrap();
+        }
+
+        match dispatch(Request::ListProxies, &state).await {
+            Response::Proxies { proxies, .. } => {
+                let plain = proxies.iter().find(|p| p.name == "reverb").unwrap();
+                assert_eq!(plain.primary_domain, None);
+                assert!(plain.domains.is_empty());
+                let custom = proxies.iter().find(|p| p.name == "app").unwrap();
+                assert_eq!(custom.primary_domain.as_deref(), Some("corp.test"));
+                assert_eq!(custom.domains, ["app.test", "corp.test"]);
+            }
+            other => panic!("expected Proxies, got {other:?}"),
+        }
+    }
+
+    /// A name-shadowed proxy is never inserted, so its name in the shared domain
+    /// maps belongs to the site that shadowed it. Reporting it must stay empty
+    /// rather than advertising the site's domains as the proxy's.
+    #[tokio::test]
+    async fn list_proxies_reports_nothing_for_a_name_shadowed_proxy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let target = yerd_core::UpstreamTarget::from_url_str("http://127.0.0.1:9011").unwrap();
+        let shadowed = yerd_core::ProxySite::new("app", target).unwrap();
+        {
+            let mut cfg = state.config.lock().await;
+            cfg.proxies.push(shadowed);
+        }
+        {
+            let corp = yerd_core::Domain::parse_subpart("corp").unwrap();
+            let site = yerd_core::Site::parked("app", "/srv/app", yerd_core::PhpVersion::new(8, 3))
+                .unwrap();
+            let mut router = state.router.write().await;
+            router
+                .insert_with_domains(
+                    site,
+                    vec![yerd_core::Domain::apex("app"), corp.clone()],
+                    corp,
+                )
+                .unwrap();
+        }
+
+        match dispatch(Request::ListProxies, &state).await {
+            Response::Proxies { proxies, .. } => {
+                let shadowed = proxies.iter().find(|p| p.name == "app").unwrap();
+                assert_eq!(shadowed.primary_domain, None);
+                assert!(shadowed.domains.is_empty());
+            }
+            other => panic!("expected Proxies, got {other:?}"),
+        }
     }
 
     const SAMPLE_EML: &[u8] = b"From: Example <hello@example.com>\r\n\

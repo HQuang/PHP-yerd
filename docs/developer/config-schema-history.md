@@ -28,7 +28,23 @@ Each entry below states what changed, whether the daemon's own migration is a ba
 
 ## Version-by-version
 
-### v22 (current)
+### v23 (current)
+
+**Added:** the optional `[domains.proxy]` table - routable-domain deltas for **whole-host proxies**, keyed by proxy name. It sits alongside the existing `[domains.linked]` (by site name) and `[domains.parked]` (by document-root string) maps and carries the same three keys: `added`, `suppressed`, and `primary`. It defaults to empty when absent, so an uncustomised file omits it entirely.
+
+```toml
+[domains.proxy.account-dev]
+added = ["custom-domain", "*.account-dev"]
+primary = "custom-domain"
+```
+
+A proxy name may itself be dotted (`api.account`), in which case TOML quotes the key: `[domains.proxy."api.account"]`. Domains are stored as **sub-parts** below the TLD, exactly as for sites, so `custom-domain` here means `custom-domain.test`. An all-empty delta is pruned by the writer, and a key naming no current proxy is inert rather than an error - the same tolerance `[domains.linked]` already has.
+
+**Migration from v22:** bare version bump - the table defaults to empty when absent, so a v22 file needs no other change.
+
+**To downgrade to v22:** change `version = 23` to `version = 22` and delete any `[domains.proxy.*]` tables (a v22 daemon rejects the unknown table under `deny_unknown_fields`, it doesn't just ignore it). Each proxy reverts to answering on its apex only, `<name>.test`.
+
+### v22
 
 **Added:** the optional `[services.<id>.overrides]` sub-table - free-form configuration overrides for a service instance, keyed by directive name. Each entry is written into that engine's generated `conf.d/10-yerd.<ext>` sidecar on every start, so the settings survive the restart that regenerates the main config (issue #195). Only the config-backed engines accept them (`mysql`, `mariadb`, `postgres`, `redis`); the table is dropped at load for any other service. It defaults to empty when absent, so an uncustomised file omits it entirely.
 
