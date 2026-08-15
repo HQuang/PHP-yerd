@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import {
   ArrowUpRight,
+  Code2,
   Copy,
   FileText,
   FolderOpen,
@@ -22,16 +23,24 @@ import Spinner from "@/components/ui/Spinner.vue";
 import Switch from "@/components/ui/Switch.vue";
 import {
   IpcError,
+  getPreferredIde,
+  getSiteIdeOverrides,
   openInBrowser,
+  openInIde,
+  openInSystemDefault,
   openInTerminal,
   openPath,
   pickDirectory,
+  setSiteIdeOverride,
   showDumpsWindow,
   wordpressAdminUsers,
 } from "@/ipc/client";
 import type { SiteEntry, StatusReport } from "@/ipc/types";
+import { resolveIde } from "@/lib/ideChoice";
 import { siteUrl } from "@/lib/siteUrl";
 import { openWpAdmin } from "@/lib/wpAdmin";
+import { loadIdes, useIdes } from "@/composables/useIdes";
+import { loadPlatform, usePlatform } from "@/composables/usePlatform";
 import { useToast } from "@/composables/useToast";
 
 const props = defineProps<{
@@ -64,14 +73,50 @@ const emit = defineEmits<{
 }>();
 
 const toast = useToast();
+const { installedIdes } = useIdes();
+const { supportsPathInstall } = usePlatform();
 const activeTab = ref<"general" | "domains" | "routing" | "information">("general");
 const webRoot = ref("");
+const globalIde = ref<string | null>(null);
+const siteIdeOverride = ref<string | null>(null);
+let editorPreferenceRequestId = 0;
 
 const phpOptions = computed(() => {
   const versions = props.site
     ? Array.from(new Set([props.site.php, ...props.phpVersions]))
     : props.phpVersions;
   return versions.map((version) => ({ value: version, label: `PHP ${version}` }));
+});
+
+// What this site's editor button resolves to right now: its own override, else
+// the global preference, else the best-ranked detected editor, else the folder.
+const editorChoice = computed(() =>
+  resolveIde(siteIdeOverride.value, globalIde.value, installedIdes.value),
+);
+
+const editorLabel = computed(() => editorChoice.value.label);
+
+const editorTooltip = computed(() =>
+  editorChoice.value.kind === "system"
+    ? "Open the site folder"
+    : `Open the site folder in ${editorChoice.value.label}`,
+);
+
+const ideOptions = computed(() => [
+  {
+    value: "default",
+    label: `Use default (${resolveIde(null, globalIde.value, installedIdes.value).label})`,
+  },
+  ...installedIdes.value.map((ide) => ({ value: ide.id, label: ide.label })),
+  { value: "system", label: "System default (open folder)" },
+]);
+
+// A native <select> renders blank when its value matches no option, so an
+// override naming an editor that isn't installed here shows as the default
+// entry while the stored preference is left untouched.
+const selectedIde = computed(() => {
+  const stored = siteIdeOverride.value ?? "default";
+  return ideOptions.value.some((option) => option.value === stored) ? stored : "default";
 });
 
 const hasGroups = computed(() => (props.groupOptions?.length ?? 0) > 0);
@@ -139,6 +184,72 @@ async function openTerminal(site: SiteEntry): Promise<void> {
   }
 }
 
+async function openSite(site: SiteEntry, report: StatusReport | null): Promise<void> {
+  try {
+    await openInBrowser(siteUrl(site, report));
+  } catch (error) {
+    toast.error("Couldn't open site", (error as IpcError).message);
+  }
+}
+
+async function revealSitePath(site: SiteEntry): Promise<void> {
+  try {
+    await openPath(site.document_root);
+  } catch (error) {
+    toast.error("Couldn't reveal site folder", (error as IpcError).message);
+  }
+}
+
+/** Read the global preference and this site's override. The request id guards
+ *  against a fast site switch resolving out of order and applying one site's
+ *  override to another. */
+async function loadEditorPreferences(siteName: string): Promise<void> {
+  const requestId = ++editorPreferenceRequestId;
+  try {
+    const [global, overrides] = await Promise.all([getPreferredIde(), getSiteIdeOverrides()]);
+    if (requestId !== editorPreferenceRequestId) return;
+    globalIde.value = global;
+    siteIdeOverride.value = overrides[siteName] ?? null;
+  } catch (error) {
+    if (requestId !== editorPreferenceRequestId) return;
+    globalIde.value = null;
+    siteIdeOverride.value = null;
+    toast.error("Couldn't load the editor preference", (error as IpcError).message);
+  }
+}
+
+/** Store this site's override, showing it optimistically. The rollback on
+ *  failure is guarded by the same request id (and the site now in view) as
+ *  `loadEditorPreferences`: a write that rejects after the user has moved on
+ *  must not stamp the old site's value onto the new one. */
+async function changeIde(site: SiteEntry, value: string): Promise<void> {
+  const requestId = editorPreferenceRequestId;
+  const previous = siteIdeOverride.value;
+  const next = value === "default" ? null : value;
+  siteIdeOverride.value = next;
+  try {
+    await setSiteIdeOverride(site.name, next);
+  } catch (error) {
+    if (requestId === editorPreferenceRequestId && props.site?.name === site.name) {
+      siteIdeOverride.value = previous;
+    }
+    toast.error("Couldn't change the editor", (error as IpcError).message);
+  }
+}
+
+async function openEditor(site: SiteEntry): Promise<void> {
+  try {
+    const choice = editorChoice.value;
+    if (choice.kind === "system") {
+      await openInSystemDefault(site.name);
+    } else {
+      await openInIde(site.name, choice.id);
+    }
+  } catch (error) {
+    toast.error("Couldn't open the site folder", (error as IpcError).message);
+  }
+}
+
 async function openDumps(): Promise<void> {
   try {
     await showDumpsWindow();
@@ -168,14 +279,18 @@ function changeWebRoot(site: SiteEntry | null): void {
 }
 
 async function chooseWebRoot(site: SiteEntry): Promise<void> {
-  const directory = await pickDirectory(site.document_root);
-  if (!directory) return;
-  const relative = relativeWebRoot(site.document_root, directory);
-  if (relative === null) {
-    toast.error("Invalid web root", "Choose a directory inside the site folder.");
-    return;
+  try {
+    const directory = await pickDirectory(site.document_root);
+    if (!directory) return;
+    const relative = relativeWebRoot(site.document_root, directory);
+    if (relative === null) {
+      toast.error("Invalid web root", "Choose a directory inside the site folder.");
+      return;
+    }
+    webRoot.value = relative;
+  } catch (error) {
+    toast.error("Couldn't choose web root", (error as IpcError).message);
   }
-  webRoot.value = relative;
 }
 
 function relativeWebRoot(siteRoot: string, selectedDirectory: string): string | null {
@@ -230,10 +345,21 @@ watch(
 // left showing, and refetches the WordPress admin list for the site now in view.
 // The fetch isn't gated on `wp_auto_login` being on: the picker has to be
 // populated by the time the toggle is switched on, not after.
+//
+// The editor preference is invalidated (request id bumped) and cleared in the
+// same tick, before any await: leaving the previous site's values in place would
+// let the Editor button open the new site's folder in the old site's editor for
+// as long as the two host calls take to resolve.
 watch(
   [() => props.open, () => props.site?.name],
   () => {
     activeTab.value = "general";
+    editorPreferenceRequestId += 1;
+    globalIde.value = null;
+    siteIdeOverride.value = null;
+    if (!props.open || !props.site) return;
+    void loadIdes();
+    void loadEditorPreferences(props.site.name);
     if (!props.open || !props.site?.is_wordpress) return;
     wpAdminUsersStatus.value = "idle";
     wpAdminUsersOptions.value = [DEFAULT_ADMIN_OPTION];
@@ -243,6 +369,7 @@ watch(
 );
 
 onMounted(() => {
+  void loadPlatform();
   document.addEventListener("keydown", onKeydown);
 });
 onUnmounted(() => {
@@ -343,7 +470,7 @@ onUnmounted(() => {
           :aria-labelledby="`site-details-tab-${activeTab}`"
         >
           <template v-if="activeTab === 'general'">
-            <Button class="w-full" @click="openInBrowser(siteUrl(site, report))">
+            <Button class="w-full" @click="openSite(site, report)">
               Open site
               <ArrowUpRight />
             </Button>
@@ -351,6 +478,18 @@ onUnmounted(() => {
             <div class="mt-4 grid grid-cols-2 gap-2">
               <Button class="min-w-0 px-2" variant="outline" size="sm" @click="openTerminal(site)">
                 <Terminal /> <span class="truncate">Terminal</span>
+              </Button>
+              <!-- Same macOS-or-Linux predicate as the PATH install: host editor
+                   launching has no Windows adapter either. -->
+              <Button
+                v-if="supportsPathInstall"
+                class="min-w-0 px-2"
+                variant="outline"
+                size="sm"
+                :title="editorTooltip"
+                @click="openEditor(site)"
+              >
+                <Code2 /> <span class="truncate">{{ editorLabel }}</span>
               </Button>
               <Button
                 class="min-w-0 px-2"
@@ -398,6 +537,23 @@ onUnmounted(() => {
                   />
                 </dd>
               </div>
+              <!-- Same macOS-or-Linux predicate as the PATH install: host editor
+                   launching has no Windows adapter either. -->
+              <div
+                v-if="supportsPathInstall"
+                class="flex items-center justify-between gap-4 px-3 py-3"
+              >
+                <dt class="shrink-0 text-xs text-muted-foreground">Editor</dt>
+                <dd class="min-w-0">
+                  <Select
+                    :model-value="selectedIde"
+                    :options="ideOptions"
+                    aria-label="Site IDE"
+                    :disabled="busy"
+                    @update:model-value="changeIde(site, $event)"
+                  />
+                </dd>
+              </div>
               <div class="px-3 py-3">
                 <dt class="text-xs text-muted-foreground">Path</dt>
                 <dd class="mt-1 flex items-start gap-2 text-sm">
@@ -405,7 +561,7 @@ onUnmounted(() => {
                   <button
                     class="min-w-0 break-all text-left font-mono hover:text-brand"
                     :title="`Reveal ${site.document_root}`"
-                    @click="openPath(site.document_root)"
+                    @click="revealSitePath(site)"
                   >
                     {{ site.document_root }}
                   </button>

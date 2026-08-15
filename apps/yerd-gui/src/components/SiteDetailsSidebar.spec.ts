@@ -1,9 +1,16 @@
 import { flushPromises, mount } from "@vue/test-utils";
+import { computed, ref } from "vue";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const openInBrowser = vi.fn();
 const openPath = vi.fn();
 const openInTerminal = vi.fn();
+const openInIde = vi.fn();
+const openInSystemDefault = vi.fn();
+const getInstalledIdes = vi.fn();
+const getPreferredIde = vi.fn();
+const getSiteIdeOverrides = vi.fn();
+const setSiteIdeOverride = vi.fn();
 const pickDirectory = vi.fn();
 const showDumpsWindow = vi.fn();
 const mintWordPressLoginToken = vi.fn();
@@ -20,6 +27,12 @@ vi.mock("@/ipc/client", () => ({
   openInBrowser: (...args: unknown[]) => openInBrowser(...args),
   openPath: (...args: unknown[]) => openPath(...args),
   openInTerminal: (...args: unknown[]) => openInTerminal(...args),
+  openInIde: (...args: unknown[]) => openInIde(...args),
+  openInSystemDefault: (...args: unknown[]) => openInSystemDefault(...args),
+  getInstalledIdes: (...args: unknown[]) => getInstalledIdes(...args),
+  getPreferredIde: (...args: unknown[]) => getPreferredIde(...args),
+  getSiteIdeOverrides: (...args: unknown[]) => getSiteIdeOverrides(...args),
+  setSiteIdeOverride: (...args: unknown[]) => setSiteIdeOverride(...args),
   pickDirectory: (...args: unknown[]) => pickDirectory(...args),
   showDumpsWindow: (...args: unknown[]) => showDumpsWindow(...args),
   mintWordPressLoginToken: (...args: unknown[]) => mintWordPressLoginToken(...args),
@@ -34,6 +47,20 @@ vi.mock("@/ipc/client", () => ({
   IpcError: class IpcError extends Error {},
 }));
 
+const hostPlatform = ref("linux");
+vi.mock("@/composables/usePlatform", () => ({
+  loadPlatform: () => Promise.resolve(),
+  usePlatform: () => ({
+    platform: hostPlatform,
+    isMac: computed(() => hostPlatform.value === "macos"),
+    isLinux: computed(() => hostPlatform.value === "linux"),
+    supportsPathInstall: computed(
+      () => hostPlatform.value === "macos" || hostPlatform.value === "linux",
+    ),
+  }),
+}));
+
+import { resetIdes } from "@/composables/useIdes";
 import type { SiteEntry, StatusReport } from "@/ipc/types";
 import SiteDetailsSidebar from "./SiteDetailsSidebar.vue";
 
@@ -95,6 +122,14 @@ describe("SiteDetailsSidebar", () => {
     openInBrowser.mockReset();
     openPath.mockReset();
     openInTerminal.mockReset();
+    openInIde.mockReset();
+    openInSystemDefault.mockReset();
+    getInstalledIdes.mockReset().mockResolvedValue([]);
+    getPreferredIde.mockReset().mockResolvedValue(null);
+    getSiteIdeOverrides.mockReset().mockResolvedValue({});
+    setSiteIdeOverride.mockReset().mockResolvedValue(undefined);
+    hostPlatform.value = "linux";
+    resetIdes();
     pickDirectory.mockReset();
     showDumpsWindow.mockReset();
     mintWordPressLoginToken.mockReset();
@@ -120,6 +155,7 @@ describe("SiteDetailsSidebar", () => {
     expect(wrapper.text()).toContain("/srv/blog");
     expect(wrapper.text()).toContain("Laravel");
     expect(wrapper.text()).toContain("8.3");
+    expect(wrapper.text()).toContain("Editor");
     expect(wrapper.text()).not.toContain("Tinker");
     expect(wrapper.text()).toContain("Terminal");
     expect(wrapper.text()).toContain("Dumps");
@@ -154,6 +190,186 @@ describe("SiteDetailsSidebar", () => {
     if (!dumps) throw new Error("Dumps button not rendered");
     await dumps.trigger("click");
     expect(showDumpsWindow).toHaveBeenCalledOnce();
+  });
+
+  it("opens the site folder with the system file manager when no IDE is detected", async () => {
+    const wrapper = mountSidebar();
+    await flushPromises();
+
+    const editor = wrapper.findAll("button").find((button) => button.text() === "Open folder");
+    if (!editor) throw new Error("Editor button not rendered");
+    await editor.trigger("click");
+
+    expect(openInSystemDefault).toHaveBeenCalledWith("blog");
+    expect(openInIde).not.toHaveBeenCalled();
+    expect(
+      wrapper.get('[aria-label="Site IDE"]').findAll("option").map((option) => option.text()),
+    ).toEqual(["Use default (Open folder)", "System default (open folder)"]);
+  });
+
+  it("opens the site folder with the selected detected IDE and stores the override", async () => {
+    getInstalledIdes.mockResolvedValue([
+      { id: "vscode", label: "VS Code" },
+      { id: "zed", label: "Zed" },
+    ]);
+    const wrapper = mountSidebar();
+    await flushPromises();
+
+    expect(
+      wrapper.get('[aria-label="Site IDE"]').findAll("option").map((option) => option.text()),
+    ).toEqual(["Use default (VS Code)", "VS Code", "Zed", "System default (open folder)"]);
+    await wrapper.get('[aria-label="Site IDE"]').setValue("zed");
+    await flushPromises();
+    expect(setSiteIdeOverride).toHaveBeenCalledWith("blog", "zed");
+
+    const editor = wrapper.findAll("button").find((button) => button.text() === "Zed");
+    if (!editor) throw new Error("IDE button not rendered");
+    await editor.trigger("click");
+
+    expect(openInIde).toHaveBeenCalledWith("blog", "zed");
+  });
+
+  it("clears the override when the default entry is picked again", async () => {
+    getInstalledIdes.mockResolvedValue([{ id: "zed", label: "Zed" }]);
+    getSiteIdeOverrides.mockResolvedValue({ blog: "system" });
+    const wrapper = mountSidebar();
+    await flushPromises();
+
+    await wrapper.get('[aria-label="Site IDE"]').setValue("default");
+    await flushPromises();
+
+    expect(setSiteIdeOverride).toHaveBeenCalledWith("blog", null);
+  });
+
+  it("auto-detects the first installed IDE", async () => {
+    getInstalledIdes.mockResolvedValue([{ id: "zed", label: "Zed" }]);
+    const wrapper = mountSidebar();
+    await flushPromises();
+
+    const editor = wrapper.findAll("button").find((button) => button.text() === "Zed");
+    if (!editor) throw new Error("Zed button not rendered");
+    await editor.trigger("click");
+
+    expect(openInIde).toHaveBeenCalledWith("blog", "zed");
+    expect(openInSystemDefault).not.toHaveBeenCalled();
+  });
+
+  it("honours a stored per-site override and names the global default", async () => {
+    getInstalledIdes.mockResolvedValue([
+      { id: "phpstorm", label: "PhpStorm" },
+      { id: "zed", label: "Zed" },
+    ]);
+    getPreferredIde.mockResolvedValue("zed");
+    getSiteIdeOverrides.mockResolvedValue({ blog: "phpstorm" });
+    const wrapper = mountSidebar();
+    await flushPromises();
+
+    expect(
+      wrapper.get('[aria-label="Site IDE"]').findAll("option")[0]?.text(),
+    ).toBe("Use default (Zed)");
+    expect((wrapper.get('[aria-label="Site IDE"]').element as HTMLSelectElement).value).toBe(
+      "phpstorm",
+    );
+
+    const editor = wrapper.findAll("button").find((button) => button.text() === "PhpStorm");
+    if (!editor) throw new Error("PhpStorm button not rendered");
+    await editor.trigger("click");
+
+    expect(openInIde).toHaveBeenCalledWith("blog", "phpstorm");
+  });
+
+  it("shows the default entry, not a blank select, for an override that is not installed", async () => {
+    getInstalledIdes.mockResolvedValue([{ id: "zed", label: "Zed" }]);
+    getSiteIdeOverrides.mockResolvedValue({ blog: "sublime" });
+    const wrapper = mountSidebar();
+    await flushPromises();
+
+    const select = wrapper.get('[aria-label="Site IDE"]');
+    expect((select.element as HTMLSelectElement).value).toBe("default");
+    expect((select.element as HTMLSelectElement).selectedIndex).toBe(0);
+    expect(setSiteIdeOverride).not.toHaveBeenCalled();
+
+    const editor = wrapper.findAll("button").find((button) => button.text() === "Zed");
+    if (!editor) throw new Error("Zed button not rendered");
+    await editor.trigger("click");
+
+    expect(openInIde).toHaveBeenCalledWith("blog", "zed");
+  });
+
+  it("drops the previous site's override while the next site's preferences load", async () => {
+    getInstalledIdes.mockResolvedValue([
+      { id: "phpstorm", label: "PhpStorm" },
+      { id: "zed", label: "Zed" },
+    ]);
+    getSiteIdeOverrides.mockResolvedValue({ blog: "zed" });
+    const wrapper = mountSidebar();
+    await flushPromises();
+    expect((wrapper.get('[aria-label="Site IDE"]').element as HTMLSelectElement).value).toBe("zed");
+
+    let release: (overrides: Record<string, string>) => void = () => {};
+    getSiteIdeOverrides.mockReturnValue(
+      new Promise<Record<string, string>>((resolve) => {
+        release = resolve;
+      }),
+    );
+    await wrapper.setProps({ site: site({ name: "shop", document_root: "/srv/shop" }) });
+
+    expect((wrapper.get('[aria-label="Site IDE"]').element as HTMLSelectElement).value).toBe(
+      "default",
+    );
+    const editor = wrapper.findAll("button").find((button) => button.text() === "PhpStorm");
+    if (!editor) throw new Error("Editor button not rendered");
+    await editor.trigger("click");
+    expect(openInIde).toHaveBeenCalledWith("shop", "phpstorm");
+
+    release({ shop: "zed" });
+    await flushPromises();
+    expect((wrapper.get('[aria-label="Site IDE"]').element as HTMLSelectElement).value).toBe("zed");
+  });
+
+  it("does not roll a failed override write back onto another site", async () => {
+    getInstalledIdes.mockResolvedValue([
+      { id: "phpstorm", label: "PhpStorm" },
+      { id: "zed", label: "Zed" },
+    ]);
+    getSiteIdeOverrides.mockResolvedValue({ blog: "zed" });
+    const wrapper = mountSidebar();
+    await flushPromises();
+
+    let fail: (error: unknown) => void = () => {};
+    setSiteIdeOverride.mockReturnValue(
+      new Promise((_resolve, reject) => {
+        fail = reject;
+      }),
+    );
+    await wrapper.get('[aria-label="Site IDE"]').setValue("phpstorm");
+
+    getSiteIdeOverrides.mockResolvedValue({});
+    await wrapper.setProps({ site: site({ name: "shop", document_root: "/srv/shop" }) });
+    await flushPromises();
+
+    fail(new Error("write failed"));
+    await flushPromises();
+
+    expect((wrapper.get('[aria-label="Site IDE"]').element as HTMLSelectElement).value).toBe(
+      "default",
+    );
+  });
+
+  it("hides the editor controls on a platform with no host launcher", async () => {
+    hostPlatform.value = "windows";
+    getInstalledIdes.mockResolvedValue([{ id: "zed", label: "Zed" }]);
+    const wrapper = mountSidebar();
+    await flushPromises();
+
+    expect(wrapper.find('[aria-label="Site IDE"]').exists()).toBe(false);
+    expect(wrapper.findAll("button").find((button) => button.text() === "Zed")).toBeUndefined();
+
+    hostPlatform.value = "linux";
+    await flushPromises();
+
+    expect(wrapper.find('[aria-label="Site IDE"]').exists()).toBe(true);
+    expect(wrapper.findAll("button").find((button) => button.text() === "Zed")).toBeDefined();
   });
 
   it("rejects a picked directory outside the site folder", async () => {
@@ -205,6 +421,21 @@ describe("SiteDetailsSidebar", () => {
     await wrapper.get(".site-sidebar-backdrop").trigger("click");
 
     expect(wrapper.emitted("close")).toHaveLength(1);
+  });
+
+  it("keeps every tab connected to the rendered panel", async () => {
+    const wrapper = mountSidebar();
+
+    for (const tab of wrapper.findAll('[role="tab"]')) {
+      await tab.trigger("click");
+      const panel = wrapper.get('[role="tabpanel"]');
+      const tabId = tab.attributes("id");
+      const tabName = tabId?.replace("site-details-tab-", "");
+
+      expect(panel.attributes("id")).toBe(`site-details-panel-${tabName}`);
+      expect(tab.attributes("aria-controls")).toBe(panel.attributes("id"));
+      expect(panel.attributes("aria-labelledby")).toBe(tabId);
+    }
   });
 
   it("closes on Escape", async () => {
